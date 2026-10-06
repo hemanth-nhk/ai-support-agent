@@ -25,10 +25,23 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 """
 
+CREATE_UPLOADED_DATASETS_TABLE = """
+CREATE TABLE IF NOT EXISTS uploaded_datasets (
+    dataset_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    format TEXT NOT NULL,
+    row_count INTEGER NOT NULL,
+    column_count INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
 
 def init_schema(conn) -> None:
     conn.execute(CREATE_CUSTOMERS_TABLE)
     conn.execute(CREATE_ORDERS_TABLE)
+    conn.execute(CREATE_UPLOADED_DATASETS_TABLE)
 
     # Ensure backward compatibility with existing SQLite files
     cursor = conn.execute("PRAGMA table_info(orders)")

@@ -19,6 +19,8 @@ def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(settings.database_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    from app.database.models import init_schema
+    init_schema(conn)
     return conn
 
 

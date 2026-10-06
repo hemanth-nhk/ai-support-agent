@@ -32,5 +32,9 @@ class Settings(BaseSettings):
     app_name: str = "AI Customer Support Agent"
     max_message_length: int = 500
 
+    # --- Tabular Analytics / Datasets ---
+    datasets_dir: str = str(BASE_DIR / "data" / "datasets")
+    max_dataset_file_size_mb: int = 50
+
 
 settings = Settings()

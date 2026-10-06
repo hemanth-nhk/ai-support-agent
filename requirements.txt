@@ -41,3 +41,7 @@ playwright==1.63.0
 pypdf>=5.0.0
 python-docx>=1.1.0
 
+# --- Tabular Analytics & Profiling ---
+duckdb==1.5.6
+pandas==3.0.6
+openpyxl==3.1.5

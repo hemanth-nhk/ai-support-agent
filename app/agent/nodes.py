@@ -27,6 +27,7 @@ from app.agent.router import (
     INTENT_AMBIGUOUS,
     INTENT_DATA_QUERY,
     INTENT_DOCUMENT_QUERY,
+    INTENT_DATASET_ANALYSIS,
 )
 from app.agent.llm_client import generate_text
 from app.agent.filters import OrderQueryFilter
@@ -84,12 +85,21 @@ FILTER_EXTRACTION_PROMPT = (
 
 
 def classify_node(state: AgentState) -> dict:
-    result = classify_intent(state["user_message"], previous_state=state)
+    result = classify_intent(
+        state["user_message"],
+        previous_state=state,
+        document_id=state.get("document_id"),
+        dataset_id=state.get("dataset_id"),
+    )
     return {
         "intent": result["intent"],
         "order_id": result["order_id"],
         "customer_id": result["customer_id"],
         "document_id": result.get("document_id") or state.get("document_id"),
+        "dataset_id": result.get("dataset_id") or state.get("dataset_id"),
+        "pending_analysis": result.get("pending_analysis") or state.get("pending_analysis"),
+        "resolved_metric": result.get("resolved_metric"),
+        "ambiguity_details": result.get("ambiguity_details"),
         "confidence": result.get("confidence", 1.0),
         "candidate_intents": result.get("candidate_intents", [result["intent"]]),
     }
@@ -211,6 +221,24 @@ def out_of_scope_node(state: AgentState) -> dict:
 
 
 def ambiguity_node(state: AgentState) -> dict:
+    if state.get("awaiting_entity") == "dataset_metric" or (state.get("ambiguity_details") and state["ambiguity_details"].get("type") == "dataset_metric"):
+        pending = state.get("pending_analysis") or state.get("ambiguity_details") or {}
+        metrics = pending.get("candidate_metrics", [])
+        if metrics:
+            metrics_str = ", ".join(metrics[:-1]) + f", or {metrics[-1]}" if len(metrics) > 1 else metrics[0]
+            response = f"Would you like to analyze this by {metrics_str}?"
+        else:
+            response = "Please specify which metric you would like to analyze."
+        return {
+            "final_response": response,
+            "tool_used": "none",
+            "retrieval_count": 0,
+            "status": "needs_clarification",
+            "awaiting_entity": "dataset_metric",
+            "pending_analysis": pending,
+            "ambiguity_details": pending,
+        }
+
     order_id = state.get("order_id")
     if order_id:
         response = (
@@ -475,6 +503,168 @@ def document_query_node(state: AgentState) -> dict:
     }
 
 
+def dataset_analysis_node(state: AgentState) -> dict:
+    dataset_id = state.get("dataset_id")
+    session_id = state.get("session_id")
+    user_message = state.get("user_message", "")
+    resolved_metric = state.get("resolved_metric")
+
+    # If following up on a pending analysis question:
+    pending = state.get("pending_analysis")
+    effective_question = user_message
+    if pending:
+        metric = resolved_metric
+        if not metric and pending.get("candidate_metrics"):
+            for m in pending["candidate_metrics"]:
+                if m.lower() in user_message.lower():
+                    metric = m
+                    break
+        if metric and pending.get("question"):
+            effective_question = f"{pending['question']} by {metric}"
+            resolved_metric = metric
+
+    if not dataset_id:
+        return {
+            "final_response": "No active dataset is selected for analysis. Please upload or attach a dataset first.",
+            "tool_used": "none",
+            "retrieval_count": 0,
+            "status": "not_found",
+            "awaiting_entity": None,
+        }
+
+    # 1. Authoritative Server-side validation of dataset ownership
+    try:
+        from app.analytics import dataset_service
+        metadata = dataset_service.get_dataset(dataset_id, session_id=session_id)
+    except dataset_service.DatasetAccessDeniedError:
+        return {
+            "final_response": "Access denied: dataset belongs to a different session.",
+            "tool_used": "none",
+            "retrieval_count": 0,
+            "status": "error",
+            "awaiting_entity": None,
+        }
+    except dataset_service.DatasetNotFoundError:
+        return {
+            "final_response": f"Dataset '{dataset_id}' not found.",
+            "tool_used": "none",
+            "retrieval_count": 0,
+            "status": "not_found",
+            "awaiting_entity": None,
+        }
+    except Exception as e:
+        return {
+            "final_response": f"Unable to access dataset: {e}",
+            "tool_used": "none",
+            "retrieval_count": 0,
+            "status": "error",
+            "awaiting_entity": None,
+        }
+
+    # 2. Schema-aware LLM planning
+    from app.analytics.planner import generate_analysis_plan, format_deterministic_result
+    from app.analytics.compiler import compile_plan
+    from app.analytics.executor import execute_compiled_query
+
+    try:
+        plan = generate_analysis_plan(
+            question=effective_question,
+            metadata=metadata,
+            resolved_metric=resolved_metric,
+        )
+    except Exception as e:
+        return {
+            "final_response": f"Failed to generate a valid analysis plan: {e}",
+            "tool_used": "none",
+            "retrieval_count": 0,
+            "status": "error",
+            "awaiting_entity": None,
+        }
+
+    # 3. Deterministic compilation
+    try:
+        compiled = compile_plan(plan, metadata)
+    except Exception as e:
+        return {
+            "final_response": f"Analysis plan compilation error: {e}",
+            "tool_used": "compile_plan",
+            "retrieval_count": 0,
+            "status": "error",
+            "awaiting_entity": None,
+        }
+
+    # 4. Safe DuckDB execution
+    try:
+        result = execute_compiled_query(
+            query=compiled,
+            dataset_id=dataset_id,
+            session_id=session_id or metadata.session_id,
+            plan=plan,
+        )
+    except Exception as e:
+        return {
+            "final_response": f"Dataset query execution failed: {e}",
+            "tool_used": "execute_compiled_query",
+            "retrieval_count": 0,
+            "status": "error",
+            "awaiting_entity": None,
+        }
+
+    # 5. Deterministic Result Formatter (User Constraint 4)
+    deterministic_summary = format_deterministic_result(result, effective_question)
+
+    # 6. Grounded LLM Explanation with Deterministic Guardrail
+    final_answer = deterministic_summary
+    try:
+        from app.agent.llm_client import get_llm
+        llm = get_llm()
+        grounding_prompt = f"""Verified facts from query execution:
+{deterministic_summary}
+
+User Question: "{effective_question}"
+
+Instruction:
+State the verified findings in a concise, natural sentence. Do not alter, contradict, or invent any numbers or categories."""
+
+        resp = llm.invoke([
+            {"role": "system", "content": "You are a factual data assistant. State the verified query findings directly."},
+            {"role": "user", "content": grounding_prompt},
+        ])
+        candidate_text = resp.content if hasattr(resp, "content") else str(resp)
+        candidate_text = candidate_text.strip()
+
+        # Deterministic Guardrail: LLM explanation must retain the verified lead entity
+        if result.rows and result.plan.group_by:
+            group_col = result.plan.group_by[0].column
+            lead_val = str(result.rows[0].get(group_col, "")).lower()
+            if lead_val and lead_val in candidate_text.lower():
+                final_answer = candidate_text
+            else:
+                final_answer = deterministic_summary
+        else:
+            final_answer = candidate_text or deterministic_summary
+    except Exception:
+        final_answer = deterministic_summary
+
+    return {
+        "final_response": final_answer,
+        "tool_used": "execute_analysis_plan",
+        "retrieval_count": result.row_count,
+        "tool_result": {
+            "row_count": result.row_count,
+            "columns": result.columns,
+            "sql": result.compiled_sql,
+            "rows": result.rows[:20],
+            "execution_time_ms": result.execution_time_ms,
+        },
+        "analysis_plan": plan.model_dump(),
+        "analysis_result": result.model_dump(),
+        "status": "ok",
+        "awaiting_entity": None,
+        "pending_analysis": None,
+    }
+
+
 ROUTE_MAP = {
     INTENT_ORDER_STATUS: "order_status_node",
     INTENT_CUSTOMER_ORDERS: "customer_orders_node",
@@ -484,6 +674,7 @@ ROUTE_MAP = {
     INTENT_AMBIGUOUS: "ambiguity_node",
     INTENT_DATA_QUERY: "data_query_node",
     INTENT_DOCUMENT_QUERY: "document_query_node",
+    INTENT_DATASET_ANALYSIS: "dataset_analysis_node",
 }
 
 

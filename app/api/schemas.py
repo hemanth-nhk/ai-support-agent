@@ -17,6 +17,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=500)
     session_id: Optional[str] = None
     document_id: Optional[str] = None
+    dataset_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):

@@ -66,6 +66,7 @@ def chat(request: ChatRequest, x_api_key: Optional[str] = Header(default=None)):
             api_key=x_api_key,
             session_id=request.session_id,
             document_id=request.document_id,
+            dataset_id=request.dataset_id,
         )
         if request.session_id:
             _sessions[request.session_id] = agent_state

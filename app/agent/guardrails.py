@@ -20,6 +20,7 @@ VALID_TOOLS = {
     "retrieve_faq",
     "search_orders",
     "retrieve_document_chunks",
+    "execute_analysis_plan",
 }
 
 MAX_MESSAGE_LENGTH = 500
@@ -68,6 +69,8 @@ class ResponseEnvelope(BaseModel):
                 raise ValueError("DATA_QUERY with status 'ok' must use 'search_orders'")
             if self.intent == "DOCUMENT_QUERY" and self.tool_used != "retrieve_document_chunks":
                 raise ValueError("DOCUMENT_QUERY with status 'ok' must use 'retrieve_document_chunks'")
+            if self.intent == "DATASET_ANALYSIS" and self.tool_used != "execute_analysis_plan":
+                raise ValueError("DATASET_ANALYSIS with status 'ok' must use 'execute_analysis_plan'")
             if self.intent == "GENERAL" and self.tool_used != "none":
                 raise ValueError("GENERAL intent must have tool_used 'none'")
 
@@ -82,6 +85,8 @@ class ResponseEnvelope(BaseModel):
             raise ValueError("search_orders tool can only be used with DATA_QUERY")
         if self.tool_used == "retrieve_document_chunks" and self.intent != "DOCUMENT_QUERY":
             raise ValueError("retrieve_document_chunks tool can only be used with DOCUMENT_QUERY")
+        if self.tool_used == "execute_analysis_plan" and self.intent != "DATASET_ANALYSIS":
+            raise ValueError("execute_analysis_plan tool can only be used with DATASET_ANALYSIS")
 
         # 3. Out-of-scope must not use tools
         if self.status == "out_of_scope" and self.tool_used != "none":

@@ -3,7 +3,7 @@ Pydantic schemas for dataset profiling, metadata, analysis plans, and execution 
 """
 from enum import Enum
 from typing import Any, Literal, Optional, Union
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ColumnProfile(BaseModel):
@@ -114,12 +114,30 @@ class GroupByClause(BaseModel):
         default=None, description="Optional date truncation bucket (year, quarter, month, day)"
     )
 
+    @field_validator("date_trunc", mode="before")
+    @classmethod
+    def normalize_date_trunc(cls, v: Any) -> Any:
+        if isinstance(v, str) and v.lower() in ("null", "none", ""):
+            return None
+        return v
+
 
 class OrderByClause(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target: str = Field(..., description="Group-by column or aggregation alias to sort by")
     descending: bool = Field(default=True, description="True for DESC, False for ASC")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_order_by(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "column" in data and "target" not in data:
+                data["target"] = data.pop("column")
+            if "direction" in data and "descending" not in data:
+                val = str(data.pop("direction")).lower()
+                data["descending"] = val in ("desc", "descending")
+        return data
 
 
 class AnalysisPlan(BaseModel):

@@ -100,6 +100,16 @@ def load_dataframe_from_bytes(content_bytes: bytes, file_format: str) -> pd.Data
     if len(df.columns) == 0:
         raise DatasetProfileError("Dataset contains no columns.")
 
+    # Automatically infer datetime columns where applicable
+    for col in df.columns:
+        if any(k in str(col).lower() for k in ("date", "time", "_at", "timestamp")):
+            try:
+                converted = pd.to_datetime(df[col], errors="coerce")
+                if converted.notna().sum() > 0:
+                    df[col] = converted
+            except Exception:
+                pass
+
     return df
 
 

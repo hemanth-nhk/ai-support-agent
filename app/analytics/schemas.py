@@ -1,8 +1,9 @@
 """
-Pydantic schemas for dataset profiling, metadata, and API responses.
+Pydantic schemas for dataset profiling, metadata, analysis plans, and execution responses.
 """
-from typing import Any, Optional
-from pydantic import BaseModel, Field
+from enum import Enum
+from typing import Any, Literal, Optional, Union
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ColumnProfile(BaseModel):
@@ -45,3 +46,102 @@ class DatasetDeleteResponse(BaseModel):
     dataset_id: str
     deleted: bool = True
     message: str = "Dataset deleted successfully."
+
+
+# ---------------------------------------------------------------------------
+# AnalysisPlan AST Schemas
+# ---------------------------------------------------------------------------
+
+class AggregationFunction(str, Enum):
+    COUNT = "count"
+    COUNT_DISTINCT = "count_distinct"
+    SUM = "sum"
+    AVG = "avg"
+    MIN = "min"
+    MAX = "max"
+
+
+class DateTrunc(str, Enum):
+    YEAR = "year"
+    QUARTER = "quarter"
+    MONTH = "month"
+    DAY = "day"
+
+
+class FilterOperator(str, Enum):
+    EQ = "=="
+    NEQ = "!="
+    GT = ">"
+    GTE = ">="
+    LT = "<"
+    LTE = "<="
+    IN = "in"
+    NOT_IN = "not_in"
+    CONTAINS = "contains"
+    STARTS_WITH = "starts_with"
+    IS_NULL = "is_null"
+    IS_NOT_NULL = "is_not_null"
+    BETWEEN = "between"
+
+
+class FilterClause(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    column: str = Field(..., description="Target dataset column name")
+    operator: FilterOperator = Field(..., description="Comparison or membership operator")
+    value: Optional[Union[str, int, float, bool, list[Union[str, int, float]]]] = Field(
+        default=None, description="Literal value, range, or list of values for filtering"
+    )
+
+
+class AggregationClause(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    column: Optional[str] = Field(
+        default=None, description="Target column, or None/'*' for general row counts"
+    )
+    function: AggregationFunction = Field(..., description="Aggregation function")
+    alias: Optional[str] = Field(
+        default=None, description="Explicit output column alias"
+    )
+
+
+class GroupByClause(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    column: str = Field(..., description="Column to group by")
+    date_trunc: Optional[DateTrunc] = Field(
+        default=None, description="Optional date truncation bucket (year, quarter, month, day)"
+    )
+
+
+class OrderByClause(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: str = Field(..., description="Group-by column or aggregation alias to sort by")
+    descending: bool = Field(default=True, description="True for DESC, False for ASC")
+
+
+class AnalysisPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dataset_id: str = Field(..., description="UUID of the active dataset")
+    filters: list[FilterClause] = Field(default_factory=list, description="Row filter conditions")
+    group_by: list[GroupByClause] = Field(default_factory=list, description="Group by dimensions")
+    aggregations: list[AggregationClause] = Field(default_factory=list, description="Aggregate metrics")
+    order_by: list[OrderByClause] = Field(default_factory=list, description="Sort order clauses")
+    limit: int = Field(default=50, ge=1, le=500, description="Max rows to return (clamped 1-500)")
+    requires_chart: bool = Field(default=False, description="Whether visualization is requested")
+    chart_type: Optional[Literal["bar", "line", "scatter", "histogram"]] = Field(
+        default=None, description="Suggested chart visualization type"
+    )
+
+
+class AnalysisResult(BaseModel):
+    plan: AnalysisPlan
+    compiled_sql: str
+    rows: list[dict[str, Any]]
+    row_count: int
+    truncated: bool = False
+    columns: list[str]
+    execution_time_ms: float

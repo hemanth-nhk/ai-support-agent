@@ -730,6 +730,102 @@ html, body {
   background-color: var(--bg-center);
 }
 
+/* Attachment Chip Bar */
+.attachment-chip-bar {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background-color: var(--assistant-bubble);
+  border: 1px solid var(--border-medium);
+  border-radius: 20px;
+  padding: 5px 12px 5px 8px;
+  font-size: 0.8rem;
+  max-width: 100%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  transition: all 0.15s ease;
+}
+
+.attachment-chip.uploading {
+  border-color: var(--primary);
+  opacity: 0.85;
+}
+
+.chip-file-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(37, 99, 235, 0.15);
+  color: #38bdf8;
+  flex-shrink: 0;
+}
+
+.chip-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.chip-filename {
+  font-weight: 500;
+  color: var(--text-main);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chip-meta {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border-light);
+}
+
+.chip-remove-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.chip-remove-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+.chip-remove-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 600px) {
+  .chip-filename {
+    max-width: 140px;
+  }
+}
+
 .composer-card {
   background-color: var(--bg-card);
   border: 1px solid var(--border-medium);
@@ -1039,3 +1135,443 @@ html, body {
     padding: 10px 16px;
   }
 }
+
+/* ==========================================================================
+   Phase 1: Conversation Management, Modals & Profile Switcher Styles
+   ========================================================================== */
+
+.profile-menu-container {
+  position: relative;
+}
+
+.profile-badge-name {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+
+.profile-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 8px;
+  width: 300px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-medium);
+  border-radius: 12px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  padding: 14px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.dropdown-header {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.dropdown-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.dropdown-badge {
+  font-size: 0.68rem;
+  color: #38bdf8;
+  font-weight: 500;
+}
+
+.dropdown-desc {
+  font-size: 0.74rem;
+  color: var(--text-dim);
+  line-height: 1.35;
+}
+
+.customer-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.customer-radio-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.customer-radio-card:hover {
+  border-color: var(--primary);
+  background-color: var(--bg-card-hover);
+}
+
+.customer-radio-card input[type="radio"] {
+  margin-top: 3px;
+  cursor: pointer;
+}
+
+.radio-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.customer-name {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.customer-orders-hint {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.dropdown-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.btn-text-danger {
+  background: transparent;
+  border: none;
+  color: #ef4444;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.btn-text-danger:hover {
+  text-decoration: underline;
+}
+
+/* Chat Top Control Bar */
+.chat-top-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 24px;
+  background-color: var(--bg-center);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.active-thread-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.thread-title-text {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.thread-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.thread-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.thread-action-btn:hover {
+  background-color: var(--bg-card-hover);
+  color: var(--text-main);
+  border-color: var(--border-medium);
+}
+
+.thread-action-btn.btn-danger:hover {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.4);
+  background-color: rgba(239, 68, 68, 0.1);
+}
+
+/* Dynamic Recent & Archived Sidebar Items */
+.recent-chat-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+  width: 100%;
+}
+
+.recent-chat-item.active {
+  background-color: #132247;
+  color: #60a5fa;
+}
+
+.recent-chat-item:hover {
+  background-color: var(--bg-card);
+  color: var(--text-main);
+}
+
+.recent-chat-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  flex: 1;
+}
+
+.recent-chat-content svg {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.item-action-btns {
+  display: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.recent-chat-item:hover .item-action-btns {
+  display: flex;
+}
+
+.item-micro-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+}
+
+.item-micro-btn:hover {
+  color: var(--text-main);
+}
+
+.item-micro-btn.danger:hover {
+  color: #ef4444;
+}
+
+/* Archived Section */
+.archived-section {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.archived-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  width: 100%;
+  transition: all 0.15s ease;
+}
+
+.archived-toggle-btn:hover {
+  background-color: var(--bg-card);
+  color: var(--text-dim);
+}
+
+.archived-toggle-btn .chevron-icon {
+  transition: transform 0.2s ease;
+}
+
+.archived-toggle-btn.open .chevron-icon {
+  transform: rotate(180deg);
+}
+
+.archived-chats-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+/* Delete Modal Dialog */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(5, 8, 16, 0.75);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 100;
+}
+
+.modal-card-dialog {
+  width: 100%;
+  max-width: 400px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-medium);
+  border-radius: 12px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.dialog-header {
+  padding: 16px 20px 10px;
+}
+
+.dialog-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.dialog-body {
+  padding: 0 20px 16px;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+.dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 20px;
+  background-color: var(--bg-input);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.dialog-footer .btn {
+  padding: 6px 14px;
+  font-size: 0.8rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.dialog-footer .btn-secondary {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border-medium);
+}
+
+.dialog-footer .btn-secondary:hover {
+  background-color: var(--bg-card);
+}
+
+.dialog-footer .btn-danger {
+  background-color: #ef4444;
+  color: #ffffff;
+  border: none;
+}
+
+.dialog-footer .btn-danger:hover {
+  background-color: #dc2626;
+}
+
+/* Toast System */
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 200;
+  pointer-events: none;
+}
+
+.toast-message {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-medium);
+  color: var(--text-main);
+  font-size: 0.82rem;
+  padding: 10px 16px;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+  animation: toastIn 0.2s ease-out;
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Floating Prompts at the Start of New Chat */
+.floating-prompts-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 10px;
+  scrollbar-width: none;
+}
+
+.floating-prompts-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.floating-prompt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-medium);
+  border-radius: 20px;
+  padding: 6px 14px;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease-in-out;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+.floating-prompt-chip:hover {
+  border-color: var(--primary);
+  background-color: var(--bg-card-hover);
+  color: var(--text-main);
+  transform: translateY(-1px);
+}
+
+.floating-prompt-chip .chip-icon {
+  font-size: 0.85rem;
+}
+
+

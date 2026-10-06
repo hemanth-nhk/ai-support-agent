@@ -60,7 +60,13 @@ def chat(request: ChatRequest, x_api_key: Optional[str] = Header(default=None)):
     previous_state = _sessions.get(request.session_id, {}) if request.session_id else None
 
     try:
-        agent_state = run_agent(request.message, previous_state=previous_state, api_key=x_api_key)
+        agent_state = run_agent(
+            request.message,
+            previous_state=previous_state,
+            api_key=x_api_key,
+            session_id=request.session_id,
+            document_id=request.document_id,
+        )
         if request.session_id:
             _sessions[request.session_id] = agent_state
 

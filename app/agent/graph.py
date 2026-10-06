@@ -15,6 +15,7 @@ from app.agent.nodes import (
     out_of_scope_node,
     ambiguity_node,
     data_query_node,
+    document_query_node,
     route_after_classify,
 )
 
@@ -32,6 +33,7 @@ def build_graph():
     graph.add_node("out_of_scope_node", out_of_scope_node)
     graph.add_node("ambiguity_node", ambiguity_node)
     graph.add_node("data_query_node", data_query_node)
+    graph.add_node("document_query_node", document_query_node)
 
     graph.add_edge(START, "classify_node")
     graph.add_conditional_edges(
@@ -45,12 +47,13 @@ def build_graph():
             "out_of_scope_node": "out_of_scope_node",
             "ambiguity_node": "ambiguity_node",
             "data_query_node": "data_query_node",
+            "document_query_node": "document_query_node",
         },
     )
     for node_name in (
         "order_status_node", "customer_orders_node",
         "faq_node", "general_node", "out_of_scope_node",
-        "ambiguity_node", "data_query_node",
+        "ambiguity_node", "data_query_node", "document_query_node",
     ):
         graph.add_edge(node_name, END)
 
@@ -64,14 +67,23 @@ def get_graph():
     return _compiled_graph
 
 
+_UNSET = object()
+
+
 def run_agent(
     user_message: str,
     previous_state: Optional[dict] = None,
     api_key: Optional[str] = None,
+    session_id: Optional[str] = None,
+    document_id: Optional[str] = _UNSET,
 ) -> AgentState:
     graph = get_graph()
     initial_state = dict(previous_state or {})
     initial_state["user_message"] = user_message
+    if session_id is not None:
+        initial_state["session_id"] = session_id
+    if document_id is not _UNSET:
+        initial_state["document_id"] = document_id
     if api_key is not None:
         initial_state["api_key"] = api_key
     result = graph.invoke(initial_state)

@@ -101,3 +101,93 @@ def test_chat_multi_turn_session_flow():
     assert "Laptop" in b2["response"]
 
 
+def test_chat_document_query_with_attachment_flow(monkeypatch):
+    import shutil
+    import tempfile
+    from chromadb import EmbeddingFunction, Documents, Embeddings
+    from app.config import settings
+    from app.services import document_service
+
+    class StubEmb(EmbeddingFunction):
+        def __init__(self):
+            pass
+        def __call__(self, input: Documents) -> Embeddings:
+            vocab = ["policy", "refund", "deadline", "december", "contract", "terms"]
+            return [[1.0 if w in t.lower() else 0.0 for w in vocab] for t in input]
+        def name(self):
+            return "stub-chat-doc"
+
+    stub_fn = StubEmb()
+    temp_dir = tempfile.mkdtemp(prefix="test_chat_docs_")
+    monkeypatch.setattr(settings, "chroma_persist_dir", temp_dir)
+    monkeypatch.setattr(document_service, "get_embedding_function", lambda: stub_fn)
+
+    session_a = "session_attach_user_a"
+    session_b = "session_attach_user_b"
+
+    # 1. Upload document in Session A
+    txt_bytes = b"Contract terms state that the deadline is December 25."
+    upload_res = client.post(
+        "/documents/upload",
+        files={"file": ("contract.txt", txt_bytes, "text/plain")},
+        data={"session_id": session_a},
+    )
+    assert upload_res.status_code == 201
+    doc_info = upload_res.json()
+    doc_id = doc_info["document_id"]
+    assert doc_id is not None
+    assert doc_info["filename"] == "contract.txt"
+
+    # 2. Query in Session A passing document_id in ChatRequest
+    with patch("app.agent.nodes.generate_text", return_value="The deadline is December 25 according to contract.txt."):
+        chat_res_a = client.post(
+            "/chat",
+            json={
+                "message": "What is the deadline in the uploaded file?",
+                "session_id": session_a,
+                "document_id": doc_id,
+            },
+        )
+        assert chat_res_a.status_code == 200
+        body_a = chat_res_a.json()
+        assert body_a["intent"] == "DOCUMENT_QUERY"
+        assert body_a["status"] == "ok"
+        assert body_a["tool_used"] == "retrieve_document_chunks"
+        assert "December 25" in body_a["response"]
+
+    # 3. Query from Session B (attempting to use Session A's document) fails closed
+    chat_res_b = client.post(
+        "/chat",
+        json={
+            "message": "What is the deadline in the uploaded file?",
+            "session_id": session_b,
+            "document_id": doc_id,
+        },
+    )
+    assert chat_res_b.status_code == 200
+    body_b = chat_res_b.json()
+    assert body_b["intent"] == "DOCUMENT_QUERY"
+    assert body_b["status"] == "not_found"
+    assert "no document is available in this chat" in body_b["response"].lower()
+
+    # 4. Delete document via API
+    del_res = client.delete(f"/documents/{doc_id}?session_id={session_a}")
+    assert del_res.status_code == 200
+    assert del_res.json()["status"] == "deleted"
+
+    # 5. Subsequent query in Session A fails closed
+    chat_res_del = client.post(
+        "/chat",
+        json={
+            "message": "What is the deadline in the uploaded file?",
+            "session_id": session_a,
+            "document_id": doc_id,
+        },
+    )
+    assert chat_res_del.status_code == 200
+    body_del = chat_res_del.json()
+    assert body_del["status"] == "not_found"
+
+    shutil.rmtree(temp_dir, ignore_errors=True)
+
+

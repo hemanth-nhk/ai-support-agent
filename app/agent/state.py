@@ -16,8 +16,12 @@ class AgentState(TypedDict, total=False):
     confidence: float
     order_id: Optional[int]
     customer_id: Optional[int]
+    document_id: Optional[str]
     candidate_intents: list[str]
     retrieved_documents: list[str]
+    retrieved_chunks: list[dict]
+    document_sources: list[str]
+    similarity_threshold: Optional[float]
     retrieval_count: int
     tool_result: Optional[dict]
     tool_used: str

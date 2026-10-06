@@ -14,13 +14,24 @@ INTENT_GENERAL = "GENERAL"
 INTENT_OUT_OF_SCOPE = "OUT_OF_SCOPE"
 INTENT_AMBIGUOUS = "AMBIGUOUS"
 INTENT_DATA_QUERY = "DATA_QUERY"
+INTENT_DOCUMENT_QUERY = "DOCUMENT_QUERY"
 
 _ORDER_ID_EXPLICIT_PATTERN = re.compile(r"\border\s*(?:id\s*)?#?\s*(\d{3,6})\b", re.IGNORECASE)
 _ORDER_ID_STANDALONE_PATTERN = re.compile(r"(?:^|[^\d])#?(\d{3,6})(?:$|[^\d])")
 _CUSTOMER_ID_EXPLICIT_PATTERN = re.compile(r"\bcustomer\s*(?:id\s*)?#?\s*(\d{1,6})\b", re.IGNORECASE)
 _CUSTOMER_ID_STANDALONE_PATTERN = re.compile(r"(?:^|[^\d])#?(\d{1,6})(?:$|[^\d])")
+_DOCUMENT_ID_PATTERN = re.compile(
+    r"\b(?:document\s*(?:id)?\s*[:#]?\s*|doc\s*[:#]?\s*)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b|"
+    r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
+    re.IGNORECASE,
+)
 
-_ORDER_KEYWORDS = ("order", "package", "shipment", "delivery status", "track", "delivery")
+_ORDER_TRACKING_PHRASES = (
+    "where is my order", "where is my package", "where is my shipment", "where is my delivery",
+    "track my order", "track order", "track package", "track shipment",
+    "order status", "delivery status", "check order", "package status", "check my shipment",
+)
+_ORDER_KEYWORDS = ("order", "package", "shipment", "delivery status", "track")
 _CUSTOMER_ORDERS_KEYWORDS = ("my orders", "previous orders", "order history", "orders does customer")
 _DATA_QUERY_KEYWORDS = (
     "find orders", "search orders", "all orders", "orders between",
@@ -30,9 +41,19 @@ _DATA_QUERY_PATTERN = re.compile(
     r"\b(?:find|search|filter|list)\s+orders?\b|\borders?\s+(?:between|from|on|after|before|since|dated)\b",
     re.IGNORECASE,
 )
+_DOCUMENT_PATTERN = re.compile(
+    r"\b(?:uploaded|attached)\s+(?:document|file|pdf|docx|txt)\b|"
+    r"\b(?:document|file|pdf|docx|txt)\s+i\s+uploaded\b|"
+    r"\b(?:in|from|about)\s+(?:the|this|my|uploaded)\s+(?:document|file|pdf|docx|txt)\b|"
+    r"\baccording\s+to\s+(?:the|this|my|uploaded)\s+(?:document|file|pdf|docx|txt)\b|"
+    r"\bsummarize\s+(?:this|the|my|uploaded)?\s*(?:document|file|pdf|docx|txt)\b|"
+    r"\bwhat\s+does\s+(?:the|this|my|the\s+uploaded)\s+(?:document|file|pdf)\s+say\b|"
+    r"\b(?:this|my)\s+(?:document|file|pdf)\b",
+    re.IGNORECASE,
+)
 _FAQ_KEYWORDS = (
     "shipping", "return", "refund", "cancel", "cancellation", "policy",
-    "how long does", "how do i return", "money back",
+    "how long does", "how do i return", "money back", "warranty", "period", "express delivery",
 )
 _GENERAL_KEYWORDS = ("hello", "hi", "hey", "who are you", "what can you", "help me", "thanks", "thank you")
 
@@ -79,13 +100,28 @@ def extract_customer_id(text: str, standalone_allowed: bool = False) -> Optional
     return None
 
 
-def classify_intent(message: str, previous_state: dict | None = None) -> dict:
+def extract_document_id(text: str) -> Optional[str]:
+    """
+    Extracts a document UUID from text if explicitly mentioned.
+    """
+    match = _DOCUMENT_ID_PATTERN.search(text)
+    if match:
+        return match.group(1) or match.group(2)
+    return None
+
+
+def classify_intent(
+    message: str,
+    previous_state: dict | None = None,
+    document_id: Optional[str] = None,
+) -> dict:
     """
     Returns a dict:
         {
             "intent": str,
             "order_id": Optional[int],
             "customer_id": Optional[int],
+            "document_id": Optional[str],
             "confidence": float,
             "candidate_intents": list[str]
         }
@@ -93,11 +129,20 @@ def classify_intent(message: str, previous_state: dict | None = None) -> dict:
     """
     text = message.lower().strip()
 
+    active_document_id = (
+        document_id
+        or extract_document_id(text)
+        or (previous_state.get("document_id") if previous_state else None)
+    )
+    if isinstance(active_document_id, str):
+        active_document_id = active_document_id.strip() or None
+
     if not text:
         return {
             "intent": INTENT_OUT_OF_SCOPE,
             "order_id": None,
             "customer_id": None,
+            "document_id": active_document_id,
             "confidence": 1.0,
             "candidate_intents": [INTENT_OUT_OF_SCOPE],
         }
@@ -108,6 +153,7 @@ def classify_intent(message: str, previous_state: dict | None = None) -> dict:
                 "intent": INTENT_OUT_OF_SCOPE,
                 "order_id": None,
                 "customer_id": None,
+                "document_id": active_document_id,
                 "confidence": 1.0,
                 "candidate_intents": [INTENT_OUT_OF_SCOPE],
             }
@@ -122,6 +168,7 @@ def classify_intent(message: str, previous_state: dict | None = None) -> dict:
                     "intent": INTENT_ORDER_STATUS,
                     "order_id": found_order_id,
                     "customer_id": None,
+                    "document_id": active_document_id,
                     "confidence": 1.0,
                     "candidate_intents": [INTENT_ORDER_STATUS],
                 }
@@ -132,6 +179,7 @@ def classify_intent(message: str, previous_state: dict | None = None) -> dict:
                     "intent": INTENT_CUSTOMER_ORDERS,
                     "order_id": None,
                     "customer_id": found_customer_id,
+                    "document_id": active_document_id,
                     "confidence": 1.0,
                     "candidate_intents": [INTENT_CUSTOMER_ORDERS],
                 }
@@ -140,32 +188,33 @@ def classify_intent(message: str, previous_state: dict | None = None) -> dict:
     order_id = extract_order_id(text, standalone_allowed=False)
     customer_id = extract_customer_id(text, standalone_allowed=False)
 
-    has_order_keywords = any(kw in text for kw in _ORDER_KEYWORDS)
-    has_customer_orders_keywords = any(kw in text for kw in _CUSTOMER_ORDERS_KEYWORDS)
     has_data_query_keywords = any(kw in text for kw in _DATA_QUERY_KEYWORDS)
     has_data_query_pattern = bool(_DATA_QUERY_PATTERN.search(text))
+    has_customer_orders_keywords = any(kw in text for kw in _CUSTOMER_ORDERS_KEYWORDS)
+    has_order_tracking_phrase = any(phrase in text for phrase in _ORDER_TRACKING_PHRASES)
+    has_order_keywords = any(kw in text for kw in _ORDER_KEYWORDS)
     has_faq_keywords = any(kw in text for kw in _FAQ_KEYWORDS)
     has_general_keywords = any(kw in text for kw in _GENERAL_KEYWORDS)
+    has_document_pattern = bool(_DOCUMENT_PATTERN.search(text))
 
-    # Step 5: Ambiguity Detection
-    # When query mentions both order tracking / order ID and policy / refund / return keywords
-    # E.g. "Can I return order 1001?", "My order hasn't arrived and I want a refund."
-    has_order_signal = (order_id is not None) or (has_order_keywords and not has_customer_orders_keywords)
-    if has_order_signal and has_faq_keywords:
+    # Priority 1: DATA_QUERY (never overridden by attached document)
+    if has_data_query_keywords or has_data_query_pattern:
         return {
-            "intent": INTENT_AMBIGUOUS,
+            "intent": INTENT_DATA_QUERY,
             "order_id": order_id,
-            "customer_id": None,
-            "confidence": 0.5,
-            "candidate_intents": [INTENT_FAQ, INTENT_ORDER_STATUS],
+            "customer_id": customer_id,
+            "document_id": active_document_id,
+            "confidence": 0.95,
+            "candidate_intents": [INTENT_DATA_QUERY],
         }
 
-    # Customer orders routing (explicit customer id or dedicated customer keywords)
+    # Priority 2: CUSTOMER_ORDERS (never overridden by attached document)
     if customer_id and has_customer_orders_keywords:
         return {
             "intent": INTENT_CUSTOMER_ORDERS,
             "order_id": None,
             "customer_id": customer_id,
+            "document_id": active_document_id,
             "confidence": 0.95,
             "candidate_intents": [INTENT_CUSTOMER_ORDERS],
         }
@@ -175,46 +224,86 @@ def classify_intent(message: str, previous_state: dict | None = None) -> dict:
             "intent": INTENT_CUSTOMER_ORDERS,
             "order_id": None,
             "customer_id": customer_id,
+            "document_id": active_document_id,
             "confidence": 0.9,
             "candidate_intents": [INTENT_CUSTOMER_ORDERS],
         }
 
-    # DATA_QUERY routing - checked BEFORE generic ORDER_STATUS
-    if has_data_query_keywords or has_data_query_pattern:
+    # Priority 3: Ambiguity between Order Tracking and Policy/FAQ
+    # (e.g. "Can I return order 1001?", "My order hasn't arrived and I want a refund.")
+    has_order_signal = (order_id is not None) or has_order_tracking_phrase or (has_order_keywords and not has_customer_orders_keywords)
+    if (order_id is not None or has_order_tracking_phrase or (has_order_keywords and not active_document_id)) and has_order_signal and has_faq_keywords:
         return {
-            "intent": INTENT_DATA_QUERY,
+            "intent": INTENT_AMBIGUOUS,
             "order_id": order_id,
-            "customer_id": customer_id,
-            "confidence": 0.95,
-            "candidate_intents": [INTENT_DATA_QUERY],
+            "customer_id": None,
+            "document_id": active_document_id,
+            "confidence": 0.5,
+            "candidate_intents": [INTENT_FAQ, INTENT_ORDER_STATUS],
         }
 
-    # Generic order status routing
-    if order_id or has_order_keywords:
+    # Priority 4: Explicit ORDER_STATUS (explicit order ID or dedicated tracking phrase)
+    if order_id is not None or has_order_tracking_phrase:
         return {
             "intent": INTENT_ORDER_STATUS,
             "order_id": order_id,
             "customer_id": None,
-            "confidence": 0.95 if order_id else 0.8,
+            "document_id": active_document_id,
+            "confidence": 0.95 if order_id else 0.85,
             "candidate_intents": [INTENT_ORDER_STATUS],
         }
 
-    # FAQ routing
+    # Priority 5: Pure general greetings (do not route pure greetings to document)
+    if has_general_keywords and not has_document_pattern and not has_faq_keywords:
+        return {
+            "intent": INTENT_GENERAL,
+            "order_id": None,
+            "customer_id": None,
+            "document_id": active_document_id,
+            "confidence": 0.9,
+            "candidate_intents": [INTENT_GENERAL],
+        }
+
+    # Priority 6: Active Attachment or explicit Document reference -> DOCUMENT_QUERY
+    if active_document_id is not None or has_document_pattern:
+        return {
+            "intent": INTENT_DOCUMENT_QUERY,
+            "order_id": order_id,
+            "customer_id": customer_id,
+            "document_id": active_document_id,
+            "confidence": 0.95,
+            "candidate_intents": [INTENT_DOCUMENT_QUERY],
+        }
+
+    # Priority 7 (No active attachment): Generic order keywords
+    if has_order_keywords:
+        return {
+            "intent": INTENT_ORDER_STATUS,
+            "order_id": order_id,
+            "customer_id": None,
+            "document_id": None,
+            "confidence": 0.8,
+            "candidate_intents": [INTENT_ORDER_STATUS],
+        }
+
+    # Priority 8 (No active attachment): FAQ routing
     if has_faq_keywords:
         return {
             "intent": INTENT_FAQ,
             "order_id": None,
             "customer_id": None,
+            "document_id": None,
             "confidence": 0.9,
             "candidate_intents": [INTENT_FAQ],
         }
 
-    # General greeting routing
+    # Priority 9 (No active attachment): General conversation
     if has_general_keywords:
         return {
             "intent": INTENT_GENERAL,
             "order_id": None,
             "customer_id": None,
+            "document_id": None,
             "confidence": 0.9,
             "candidate_intents": [INTENT_GENERAL],
         }
@@ -224,6 +313,7 @@ def classify_intent(message: str, previous_state: dict | None = None) -> dict:
         "intent": INTENT_OUT_OF_SCOPE,
         "order_id": None,
         "customer_id": None,
+        "document_id": None,
         "confidence": 1.0,
         "candidate_intents": [INTENT_OUT_OF_SCOPE],
     }

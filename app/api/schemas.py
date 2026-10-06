@@ -16,6 +16,7 @@ class OrderOut(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=500)
     session_id: Optional[str] = None
+    document_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -29,3 +30,16 @@ class ChatResponse(BaseModel):
     tool_used: str
     retrieval_count: int
     status: str  # "ok" | "not_found" | "out_of_scope" | "clarification" | "needs_clarification" | "error"
+
+
+class DocumentUploadResponse(BaseModel):
+    document_id: str
+    filename: str
+    chunk_count: int
+
+
+class DocumentDeleteResponse(BaseModel):
+    status: str
+    document_id: str
+    deleted_chunks: int
+

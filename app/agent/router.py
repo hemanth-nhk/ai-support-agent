@@ -32,7 +32,10 @@ _ORDER_TRACKING_PHRASES = (
     "order status", "delivery status", "check order", "package status", "check my shipment", "check my package",
 )
 _ORDER_KEYWORDS = ("order", "package", "shipment", "delivery status", "track")
-_CUSTOMER_ORDERS_KEYWORDS = ("my orders", "previous orders", "order history", "orders does customer")
+_CUSTOMER_ORDERS_KEYWORDS = (
+    "my orders", "previous orders", "order history", "orders does customer",
+    "ordered previously", "what have i ordered", "past orders",
+)
 _DATA_QUERY_KEYWORDS = (
     "find orders", "search orders", "all orders", "orders between",
     "orders from", "orders on", "filter orders", "list orders",

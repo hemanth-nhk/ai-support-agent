@@ -140,7 +140,17 @@ def evaluate_multiturn_retention():
 def evaluate_rag():
     temp_dir = tempfile.mkdtemp(prefix="eval_chroma_")
     try:
-        build_index(persist_dir=temp_dir, embedding_fn=StubEmbeddingFunction())
+        try:
+            from app.rag.embeddings import get_embedding_function
+            emb_fn = get_embedding_function()
+            eval_threshold = 0.65
+            mode_name = "all-MiniLM-L6-v2"
+        except Exception:
+            emb_fn = StubEmbeddingFunction()
+            eval_threshold = 0.60
+            mode_name = "Stub Embedding"
+
+        build_index(persist_dir=temp_dir, embedding_fn=emb_fn)
 
         cases_file = DATASETS_DIR / "rag_ground_truth.json"
         with open(cases_file, "r", encoding="utf-8") as f:
@@ -155,8 +165,8 @@ def evaluate_rag():
             res = retrieve_faq(
                 c["query"],
                 persist_dir=temp_dir,
-                embedding_fn=StubEmbeddingFunction(),
-                threshold=0.6,
+                embedding_fn=emb_fn,
+                threshold=eval_threshold,
             )
 
             is_found = res["found"]
@@ -183,6 +193,7 @@ def evaluate_rag():
             "precision": precision,
             "recall": recall,
             "false_positive_rate": fp_rate,
+            "mode": mode_name,
         }
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -434,7 +445,7 @@ def main():
     print(f"    Turn 1 -> Turn 2 Entity   : {status_str}")
 
     rag_res = evaluate_rag()
-    print(f"\n[4] Static FAQ RAG Evaluation ({rag_res['total_queries']} queries):")
+    print(f"\n[4] Static FAQ RAG Evaluation ({rag_res['total_queries']} queries, Model: {rag_res.get('mode', 'Embeddings')}):")
     print(f"    Precision                 : {rag_res['precision']:.1f}%")
     print(f"    Recall                    : {rag_res['recall']:.1f}%")
     print(f"    False Positive Rate       : {rag_res['false_positive_rate']:.1f}%")

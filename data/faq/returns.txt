@@ -1,0 +1,9 @@
+DEMO DATA -- replace with approved business policy before real use.
+
+Return Policy
+
+Items can be returned within 30 days of delivery for a full refund.
+Products must be unused and in their original packaging to qualify for a return.
+To start a return, contact support with your order ID and reason for return.
+Return shipping costs are covered by us if the item arrived damaged or defective.
+Otherwise, return shipping costs are the customer's responsibility.

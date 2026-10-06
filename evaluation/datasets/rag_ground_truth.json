@@ -1,0 +1,18 @@
+[
+  {"query": "How long does shipping take?", "is_relevant": true, "expected_topic": "shipping"},
+  {"query": "What are your standard delivery timeframes?", "is_relevant": true, "expected_topic": "shipping"},
+  {"query": "What is your return policy?", "is_relevant": true, "expected_topic": "returns"},
+  {"query": "Can I send an item back if I do not like it?", "is_relevant": true, "expected_topic": "returns"},
+  {"query": "How many days do I have to return an item?", "is_relevant": true, "expected_topic": "returns"},
+  {"query": "When will my refund arrive in my bank?", "is_relevant": true, "expected_topic": "refunds"},
+  {"query": "How are refunds processed for credit card purchases?", "is_relevant": true, "expected_topic": "refunds"},
+  {"query": "Can I cancel my order before shipment?", "is_relevant": true, "expected_topic": "cancellation"},
+  {"query": "What is the cancellation procedure?", "is_relevant": true, "expected_topic": "cancellation"},
+
+  {"query": "How do I make chicken biryani?", "is_relevant": false, "expected_topic": null},
+  {"query": "What is the capital city of France?", "is_relevant": false, "expected_topic": null},
+  {"query": "Write a python script for sorting numbers", "is_relevant": false, "expected_topic": null},
+  {"query": "What is the stock price of Apple today?", "is_relevant": false, "expected_topic": null},
+  {"query": "How is the weather in Hyderabad?", "is_relevant": false, "expected_topic": null},
+  {"query": "Tell me a joke about programming", "is_relevant": false, "expected_topic": null}
+]

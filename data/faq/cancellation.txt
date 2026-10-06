@@ -1,0 +1,8 @@
+DEMO DATA -- replace with approved business policy before real use.
+
+Cancellation Policy
+
+Orders can be cancelled free of charge within 1 hour of being placed.
+After that window, an order can only be cancelled if it has not yet shipped.
+Once an order has shipped, it cannot be cancelled -- you may request a return instead once it arrives.
+To cancel an order, contact support with your order ID as soon as possible.

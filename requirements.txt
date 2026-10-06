@@ -1,0 +1,37 @@
+# Versions below were resolved and import/run-tested together on 2026-09-11
+# (including a live pytest run of all 35 tests). Do not pin arbitrary
+# versions without re-running the import test in app/agent/llm_client.py --
+# LangGraph/LangChain-Ollama compatibility breaks across versions more
+# often than most stacks.
+
+# --- API layer ---
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+strawberry-graphql[fastapi]==0.327.7
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+
+# --- Agent / LLM orchestration (local Ollama only, no cloud) ---
+langgraph==1.2.11
+langchain-core==1.6.2
+langchain-ollama==1.1.0
+
+# --- RAG ---
+# chromadb>=1.x no longer depends on chroma-hnswlib, which is what caused
+# Python 3.13 Windows wheel-build failures on older chromadb (0.5.x) pins.
+# This version works on Python 3.11+ including 3.13 without extra steps.
+chromadb==1.5.9
+sentence-transformers==3.3.1
+
+# --- RAG note (Windows) ---
+# sentence-transformers depends on torch. If you don't have an NVIDIA GPU
+# and want a smaller/faster install, run this BEFORE the main install:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# --- DB ---
+# sqlite3 is part of the Python standard library -- no package needed
+
+# --- Testing ---
+pytest==9.1.1
+httpx==0.28.1

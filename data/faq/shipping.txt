@@ -1,0 +1,9 @@
+DEMO DATA -- replace with approved business policy before real use.
+
+Shipping Policy
+
+Standard shipping normally takes 3-5 business days.
+Express shipping normally takes 1-2 business days.
+Delivery times can vary depending on your location and courier availability.
+Shipping costs are calculated at checkout based on package weight and destination.
+We currently ship within the country only; international shipping is not available.

@@ -1,0 +1,32 @@
+[
+  {
+    "input": "Can I return order 1001?",
+    "expected_intent": "AMBIGUOUS",
+    "expected_order_id": 1001,
+    "expected_candidates": ["FAQ", "ORDER_STATUS"]
+  },
+  {
+    "input": "My order hasn't arrived and I want a refund.",
+    "expected_intent": "AMBIGUOUS",
+    "expected_order_id": null,
+    "expected_candidates": ["FAQ", "ORDER_STATUS"]
+  },
+  {
+    "input": "I want to cancel order 1002 before it ships",
+    "expected_intent": "AMBIGUOUS",
+    "expected_order_id": 1002,
+    "expected_candidates": ["FAQ", "ORDER_STATUS"]
+  },
+  {
+    "input": "Where is my refund for order 1003?",
+    "expected_intent": "AMBIGUOUS",
+    "expected_order_id": 1003,
+    "expected_candidates": ["FAQ", "ORDER_STATUS"]
+  },
+  {
+    "input": "What is the return policy for order 1004?",
+    "expected_intent": "AMBIGUOUS",
+    "expected_order_id": 1004,
+    "expected_candidates": ["FAQ", "ORDER_STATUS"]
+  }
+]

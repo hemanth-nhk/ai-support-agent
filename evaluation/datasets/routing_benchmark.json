@@ -1,0 +1,34 @@
+[
+  {"input": "Where is order 1001?", "expected_intent": "ORDER_STATUS", "expected_order_id": 1001},
+  {"input": "Track my order #1002 please", "expected_intent": "ORDER_STATUS", "expected_order_id": 1002},
+  {"input": "Has order 1003 shipped yet?", "expected_intent": "ORDER_STATUS", "expected_order_id": 1003},
+  {"input": "What is the status of order id 1004", "expected_intent": "ORDER_STATUS", "expected_order_id": 1004},
+  {"input": "Where is my package?", "expected_intent": "ORDER_STATUS", "expected_order_id": null},
+  {"input": "I want to track my delivery status", "expected_intent": "ORDER_STATUS", "expected_order_id": null},
+  {"input": "Can you check my shipment?", "expected_intent": "ORDER_STATUS", "expected_order_id": null},
+
+  {"input": "What orders does customer 1 have?", "expected_intent": "CUSTOMER_ORDERS", "expected_customer_id": 1},
+  {"input": "Show previous orders for customer #2", "expected_intent": "CUSTOMER_ORDERS", "expected_customer_id": 2},
+  {"input": "Look up order history for customer id 3", "expected_intent": "CUSTOMER_ORDERS", "expected_customer_id": 3},
+  {"input": "Show my orders", "expected_intent": "CUSTOMER_ORDERS", "expected_customer_id": null},
+  {"input": "What have I ordered previously?", "expected_intent": "CUSTOMER_ORDERS", "expected_customer_id": null},
+
+  {"input": "What is your return policy?", "expected_intent": "FAQ"},
+  {"input": "Can I return an item I bought?", "expected_intent": "FAQ"},
+  {"input": "How long does shipping take?", "expected_intent": "FAQ"},
+  {"input": "When can I get my money back?", "expected_intent": "FAQ"},
+  {"input": "What is your refund timeframe?", "expected_intent": "FAQ"},
+  {"input": "How do I cancel my purchase before dispatch?", "expected_intent": "FAQ"},
+
+  {"input": "Hello", "expected_intent": "GENERAL"},
+  {"input": "Hi there, who are you?", "expected_intent": "GENERAL"},
+  {"input": "What can you help me with?", "expected_intent": "GENERAL"},
+  {"input": "Thanks for your help!", "expected_intent": "GENERAL"},
+
+  {"input": "Write a python script for sorting an array", "expected_intent": "OUT_OF_SCOPE"},
+  {"input": "What is the capital of France?", "expected_intent": "OUT_OF_SCOPE"},
+  {"input": "What is the current stock price of Apple?", "expected_intent": "OUT_OF_SCOPE"},
+  {"input": "What is the weather in Hyderabad today?", "expected_intent": "OUT_OF_SCOPE"},
+  {"input": "Tell me a joke", "expected_intent": "OUT_OF_SCOPE"},
+  {"input": "Give me investment advice on crypto", "expected_intent": "OUT_OF_SCOPE"}
+]

@@ -28,8 +28,8 @@ _DOCUMENT_ID_PATTERN = re.compile(
 
 _ORDER_TRACKING_PHRASES = (
     "where is my order", "where is my package", "where is my shipment", "where is my delivery",
-    "track my order", "track order", "track package", "track shipment",
-    "order status", "delivery status", "check order", "package status", "check my shipment",
+    "track my order", "track order", "track package", "track my package", "track shipment", "track my shipment",
+    "order status", "delivery status", "check order", "package status", "check my shipment", "check my package",
 )
 _ORDER_KEYWORDS = ("order", "package", "shipment", "delivery status", "track")
 _CUSTOMER_ORDERS_KEYWORDS = ("my orders", "previous orders", "order history", "orders does customer")
@@ -55,7 +55,10 @@ _FAQ_KEYWORDS = (
     "shipping", "return", "refund", "cancel", "cancellation", "policy",
     "how long does", "how do i return", "money back", "warranty", "period", "express delivery",
 )
-_GENERAL_KEYWORDS = ("hello", "hi", "hey", "who are you", "what can you", "help me", "thanks", "thank you")
+_GENERAL_PATTERN = re.compile(
+    r"\b(?:hello|hi|hey|who are you|what can you|help me|thanks|thank you)\b",
+    re.IGNORECASE,
+)
 
 # Explicit deny-list to reject out-of-scope queries
 _OUT_OF_SCOPE_KEYWORDS = (
@@ -194,7 +197,7 @@ def classify_intent(
     has_order_tracking_phrase = any(phrase in text for phrase in _ORDER_TRACKING_PHRASES)
     has_order_keywords = any(kw in text for kw in _ORDER_KEYWORDS)
     has_faq_keywords = any(kw in text for kw in _FAQ_KEYWORDS)
-    has_general_keywords = any(kw in text for kw in _GENERAL_KEYWORDS)
+    has_general_keywords = bool(_GENERAL_PATTERN.search(text))
     has_document_pattern = bool(_DOCUMENT_PATTERN.search(text))
 
     # Priority 1: DATA_QUERY (never overridden by attached document)

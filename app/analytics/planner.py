@@ -31,7 +31,14 @@ from app.analytics.schemas import (
     CumulativeFunction,
     OutlierSpec,
     QuantileSpec,
+    PlanMutation,
+    PlanMutationType,
+    FilterDelta,
+    GroupByDelta,
+    MetricDelta,
+    SortDelta,
 )
+from app.analytics.mutator import apply_plan_mutation, MutationError, describe_mutation
 from app.analytics.compiler import classify_dtype
 
 logger = logging.getLogger("app.analytics.planner")
@@ -131,15 +138,124 @@ CRITICAL RULES:
 """
 
 
+MUTATION_PLANNER_SYSTEM_PROMPT = """You are a precise data analysis mutation planner.
+You receive a user's question, the dataset schema, and the PREVIOUS AnalysisPlan JSON currently active in the session.
+Your task is to determine whether the user is:
+1. Refining, modifying, filtering, or resetting the previous analysis (an incremental mutation), OR
+2. Asking an entirely new, unrelated analytical query (NEW_QUERY).
+
+You must output ONLY a valid PlanMutation JSON object matching this schema:
+{
+  "mutation_type": "new_query" | "reset_analysis" | "add_filter" | "change_filter" | "remove_filter" | "change_group_by" | "add_group_by" | "remove_group_by" | "change_metric" | "change_sort" | "change_limit" | "add_rolling" | "add_cumulative" | "toggle_chart",
+  "filter_delta": {"column": "string", "operator": "==" | "!=" | ">" | ">=" | "<" | "<=" | "in" | "not_in" | "contains" | "starts_with" | "is_null" | "is_not_null" | "between" | null, "value": string | number | array | null} | null,
+  "group_by_delta": {"column": "string", "date_trunc": "year" | "quarter" | "month" | "day" | null} | null,
+  "metric_delta": {"column": "string" | null, "function": "count" | "count_distinct" | "sum" | "avg" | "min" | "max" | "median" | "stddev" | "percentile_cont", "alias": "string" | null, "quantile": float | null} | null,
+  "sort_delta": {"target": "string", "descending": true | false} | null,
+  "limit_delta": int | null,
+  "rolling_delta": {"function": "avg" | "sum" | "min" | "max", "column": "string", "order_by": "string", "preceding": int, "partition_by": ["string"], "alias": "string" | null} | null,
+  "cumulative_delta": {"function": "sum" | "avg" | "count", "column": "string" | null, "order_by": "string", "partition_by": ["string"], "alias": "string" | null} | null,
+  "chart_type": "bar" | "line" | "scatter" | "histogram" | null,
+  "requires_chart": boolean | null,
+  "new_plan": AnalysisPlan | null
+}
+
+RULES:
+1. Output ONLY a valid JSON object matching the PlanMutation schema. Do NOT output markdown explanations or commentary.
+2. If the user says "filter to...", "only for...", "where...", or specifies a category/dimension value (e.g. "Filter to Electronics", "only in North"):
+   Use "add_filter" or "change_filter" with "filter_delta".
+3. If the user says "remove filter", "clear filters", "reset filter", "unfilter":
+   Use "remove_filter" (or "reset_analysis" if resetting entire analysis/drill-down).
+4. If the user says "group by...", "by <dimension>", "break down by...", "now show by product":
+   Use "change_group_by" (to switch dimension) or "add_group_by" (to add a multi-dimension breakdown).
+5. If the user says "show profit instead", "switch metric to revenue", "now show the average price":
+   Use "change_metric" with "metric_delta".
+6. If the user says "sort by...", "order by lowest", "top...", "highest...":
+   Use "change_sort" with "sort_delta".
+7. If the user specifies row limits (e.g. "show top 5", "limit to 10"):
+   Use "change_limit" with "limit_delta", or include "limit_delta" as a secondary field.
+8. If the user asks for a rolling/moving window (e.g. "7-day rolling average"):
+   Use "add_rolling" with "rolling_delta".
+9. If the user asks for running/cumulative totals (e.g. "cumulative sum over time"):
+   Use "add_cumulative" with "cumulative_delta".
+10. If the user asks to "chart it", "show as bar chart", "visualize":
+   Use "toggle_chart" with "chart_type" / "requires_chart".
+11. If the user asks a completely new question unrelated to the previous analysis (e.g. "Show total users by country" after analyzing revenue by product):
+    Use "new_query" and provide the complete "new_plan".
+"""
+
+
+def plan_mutation(
+    question: str,
+    metadata: DatasetMetadata,
+    previous_plan: Optional[AnalysisPlan] = None,
+    resolved_metric: Optional[str] = None,
+) -> PlanMutation:
+    """
+    Classifies user analytical intent and produces a typed PlanMutation.
+    If previous_plan is None, generates a fresh AnalysisPlan and wraps it in NEW_QUERY.
+    If previous_plan is provided, prompts the LLM or falls back to deterministic heuristic classification.
+    """
+    if previous_plan is None:
+        fresh_plan = generate_analysis_plan(question, metadata, resolved_metric=resolved_metric)
+        return PlanMutation(
+            mutation_type=PlanMutationType.NEW_QUERY,
+            new_plan=fresh_plan,
+        )
+
+    schema_ctx = build_schema_context(metadata)
+    prev_plan_json = previous_plan.model_dump_json(indent=2)
+
+    user_prompt = f"""{schema_ctx}
+
+ACTIVE ANALYSIS PLAN (PREVIOUS TURN):
+{prev_plan_json}
+
+USER FOLLOW-UP QUESTION:
+"{question}"
+"""
+    if resolved_metric:
+        user_prompt += f"\nClarified metric: '{resolved_metric}'."
+    user_prompt += "\nOutput the PlanMutation JSON object:"
+
+    llm = get_llm()
+    try:
+        response = llm.invoke([
+            {"role": "system", "content": MUTATION_PLANNER_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ])
+        raw_output = response.content if hasattr(response, "content") else str(response)
+        parsed_json = _extract_json_from_llm_output(raw_output)
+
+        if parsed_json.get("mutation_type") == "new_query" and not parsed_json.get("new_plan"):
+            parsed_json["new_plan"] = generate_analysis_plan(question, metadata, resolved_metric=resolved_metric).model_dump()
+
+        mutation = PlanMutation.model_validate(parsed_json)
+    except Exception as e:
+        logger.warning(f"LLM mutation planning failed: {e}. Using deterministic heuristic fallback.")
+        mutation = _fallback_heuristic_mutation(question, metadata, previous_plan, resolved_metric)
+
+    return mutation
+
+
 def generate_analysis_plan(
     question: str,
     metadata: DatasetMetadata,
     resolved_metric: Optional[str] = None,
+    previous_plan: Optional[AnalysisPlan] = None,
 ) -> AnalysisPlan:
     """
     Prompts the LLM to generate an AnalysisPlan, validates with Pydantic,
     and enforces server-authoritative dataset_id.
+    If previous_plan is provided, applies an incremental PlanMutation.
     """
+    if previous_plan is not None:
+        mutation = plan_mutation(
+            question=question,
+            metadata=metadata,
+            previous_plan=previous_plan,
+            resolved_metric=resolved_metric,
+        )
+        return apply_plan_mutation(previous_plan, mutation, metadata=metadata)
     schema_ctx = build_schema_context(metadata)
 
     user_prompt = f"""{schema_ctx}
@@ -545,6 +661,233 @@ def _fallback_heuristic_plan(
         "dataset_id": metadata.dataset_id,
         "aggregations": [{"column": None, "function": "count", "alias": "row_count"}],
     }
+
+
+def _fallback_heuristic_mutation(
+    question: str,
+    metadata: DatasetMetadata,
+    previous_plan: AnalysisPlan,
+    resolved_metric: Optional[str] = None,
+) -> PlanMutation:
+    """
+    Deterministic fallback for classifying follow-up analytical intent and extracting
+    PlanMutation when the LLM is unavailable or produces invalid JSON.
+    """
+    q_low = question.lower().strip()
+    str_cols = [c.name for c in metadata.profile.columns if classify_dtype(c.dtype, c.name) == "string"]
+    num_cols = [c.name for c in metadata.profile.columns if classify_dtype(c.dtype, c.name) == "numeric"]
+    date_cols = [c.name for c in metadata.profile.columns if classify_dtype(c.dtype, c.name) == "datetime"]
+
+    # 1. RESET_ANALYSIS / REMOVE_FILTER
+    if any(k in q_low for k in ("clear filter", "clear filters", "reset filter", "reset filters", "reset analysis", "clear all filters", "start over")):
+        top_match = re.search(r"(?:top|limit|first)\s+(\d+)", q_low)
+        limit_val = int(top_match.group(1)) if top_match else None
+
+        target_dim = None
+        for sc in str_cols:
+            if sc.lower() in q_low or sc.lower().rstrip("s") in q_low:
+                target_dim = sc
+                break
+
+        if target_dim or limit_val or "reset" in q_low or "clear filters and" in q_low:
+            gb_delta = GroupByDelta(column=target_dim) if target_dim else None
+            return PlanMutation(
+                mutation_type=PlanMutationType.RESET_ANALYSIS,
+                group_by_delta=gb_delta,
+                limit_delta=limit_val,
+            )
+        col_to_rm = None
+        for col in metadata.profile.columns:
+            if col.name.lower() in q_low:
+                col_to_rm = col.name
+                break
+        if col_to_rm:
+            return PlanMutation(
+                mutation_type=PlanMutationType.REMOVE_FILTER,
+                filter_delta=FilterDelta(column=col_to_rm),
+            )
+        return PlanMutation(mutation_type=PlanMutationType.REMOVE_FILTER)
+
+    # 2. ADD_ROLLING (e.g. "show that over time as a 7-day rolling average")
+    rolling_keywords = (
+        "rolling", "moving average", "moving avg", "moving sum", "rolling average", "rolling avg"
+    )
+    if any(k in q_low for k in rolling_keywords):
+        metric = resolved_metric
+        if not metric and previous_plan.aggregations and previous_plan.aggregations[0].column:
+            metric = previous_plan.aggregations[0].column
+        if not metric and num_cols:
+            metric = num_cols[0]
+
+        order_col = date_cols[0] if date_cols else (str_cols[0] if str_cols else metadata.profile.columns[0].name)
+        preceding = 6
+        window_match = re.search(r"(\d+)[- ]?(?:day|period|row|month|week)", q_low)
+        if window_match:
+            try:
+                preceding = max(1, int(window_match.group(1)) - 1)
+            except ValueError:
+                preceding = 6
+
+        fn = WindowFunction.AVG
+        if "sum" in q_low or "total" in q_low:
+            fn = WindowFunction.SUM
+        elif "min" in q_low:
+            fn = WindowFunction.MIN
+        elif "max" in q_low:
+            fn = WindowFunction.MAX
+
+        return PlanMutation(
+            mutation_type=PlanMutationType.ADD_ROLLING,
+            rolling_delta=RollingWindowSpec(
+                function=fn,
+                column=metric or (num_cols[0] if num_cols else "value"),
+                order_by=order_col,
+                preceding=preceding,
+            ),
+        )
+
+    # 3. ADD_CUMULATIVE (e.g. "cumulative total over time")
+    cum_keywords = ("cumulative", "running total", "running sum", "running avg", "running count")
+    if any(k in q_low for k in cum_keywords):
+        metric = resolved_metric or (previous_plan.aggregations[0].column if previous_plan.aggregations else None) or (num_cols[0] if num_cols else None)
+        order_col = date_cols[0] if date_cols else (str_cols[0] if str_cols else metadata.profile.columns[0].name)
+        cfn = CumulativeFunction.SUM
+        if "count" in q_low:
+            cfn = CumulativeFunction.COUNT
+            metric = None
+        elif "avg" in q_low or "average" in q_low:
+            cfn = CumulativeFunction.AVG
+
+        return PlanMutation(
+            mutation_type=PlanMutationType.ADD_CUMULATIVE,
+            cumulative_delta=CumulativeSpec(
+                function=cfn,
+                column=metric,
+                order_by=order_col,
+            ),
+        )
+
+    # 4. TOGGLE_CHART / VISUALIZATION
+    chart_keywords = ("chart", "plot", "graph", "visualize", "visualization")
+    if any(k in q_low for k in chart_keywords):
+        if any(w in q_low for w in ("hide", "remove", "disable", "no chart")):
+            return PlanMutation(mutation_type=PlanMutationType.TOGGLE_CHART, requires_chart=False)
+        ctype = "bar"
+        if "line" in q_low or "trend" in q_low:
+            ctype = "line"
+        elif "scatter" in q_low:
+            ctype = "scatter"
+        elif "histogram" in q_low:
+            ctype = "histogram"
+        return PlanMutation(
+            mutation_type=PlanMutationType.TOGGLE_CHART,
+            chart_type=ctype,
+            requires_chart=True,
+        )
+
+    # 5. CHANGE_SORT
+    if any(k in q_low for k in ("sort by", "order by", "highest first", "lowest first", "ascending", "descending")):
+        desc = not any(k in q_low for k in ("lowest", "least", "asc", "ascending"))
+        target = None
+        for col in metadata.profile.columns:
+            if col.name.lower() in q_low:
+                target = col.name
+                break
+        if not target and previous_plan.aggregations:
+            target = previous_plan.aggregations[0].alias or previous_plan.aggregations[0].column
+        if not target and previous_plan.group_by:
+            target = previous_plan.group_by[0].column
+        return PlanMutation(
+            mutation_type=PlanMutationType.CHANGE_SORT,
+            sort_delta=SortDelta(target=target or "total", descending=desc),
+        )
+
+    # 6. CHANGE_LIMIT (standalone: e.g. "show top 5", "limit to 10")
+    limit_match = re.search(r"^(?:show\s+)?(?:top|limit|first)\s+(\d+)$", q_low)
+    if limit_match:
+        return PlanMutation(
+            mutation_type=PlanMutationType.CHANGE_LIMIT,
+            limit_delta=int(limit_match.group(1)),
+        )
+
+    # 7. CHANGE_METRIC (e.g. "show profit instead", "switch to revenue", "now average price")
+    if any(k in q_low for k in ("instead", "switch metric", "change metric", "switch to", "now show")):
+        target_num = None
+        for nc in num_cols:
+            if nc.lower() in q_low:
+                target_num = nc
+                break
+        if target_num:
+            fn = AggregationFunction.AVG if any(w in q_low for w in ("avg", "average", "mean")) else AggregationFunction.SUM
+            return PlanMutation(
+                mutation_type=PlanMutationType.CHANGE_METRIC,
+                metric_delta=MetricDelta(
+                    column=target_num,
+                    function=fn,
+                    alias=f"{fn.value}_{target_num}",
+                ),
+            )
+
+    # 8. GROUP_BY MUTATIONS (CHANGE_GROUP_BY, ADD_GROUP_BY, REMOVE_GROUP_BY)
+    if any(k in q_low for k in ("also by", "add group", "break down further by")):
+        for sc in str_cols:
+            if sc.lower() in q_low:
+                return PlanMutation(
+                    mutation_type=PlanMutationType.ADD_GROUP_BY,
+                    group_by_delta=GroupByDelta(column=sc),
+                )
+    if any(k in q_low for k in ("group by", "by ", "per ", "break down by", "now show by")):
+        for sc in str_cols:
+            if sc.lower() in q_low or sc.lower().rstrip("s") in q_low:
+                return PlanMutation(
+                    mutation_type=PlanMutationType.CHANGE_GROUP_BY,
+                    group_by_delta=GroupByDelta(column=sc),
+                )
+
+    # 9. ADD_FILTER / CHANGE_FILTER (e.g. "Filter to Electronics", "only in North", "where status is delivered")
+    filter_trigger = any(k in q_low for k in ("filter", "only", "where", "for "))
+    if filter_trigger:
+        target_col = None
+        filter_val = None
+
+        for sc in str_cols:
+            if sc.lower() in q_low:
+                target_col = sc
+                break
+
+        v_match = re.search(r"(?:filter\s+to|filter\s+by|only|where)\s+([A-Za-z0-9_\s-]+)", question, re.IGNORECASE)
+        if v_match:
+            raw_v = v_match.group(1).strip()
+            raw_v = re.sub(r"^(?:in|the|for|status|category|region|country)\s+", "", raw_v, flags=re.IGNORECASE).strip()
+            if raw_v:
+                filter_val = raw_v
+
+        if not target_col:
+            if previous_plan.group_by:
+                target_col = previous_plan.group_by[0].column
+            elif str_cols:
+                target_col = str_cols[0]
+
+        if target_col and filter_val:
+            existing_cols = {f.column for f in previous_plan.filters}
+            m_type = PlanMutationType.CHANGE_FILTER if target_col in existing_cols else PlanMutationType.ADD_FILTER
+            return PlanMutation(
+                mutation_type=m_type,
+                filter_delta=FilterDelta(
+                    column=target_col,
+                    operator=FilterOperator.EQ,
+                    value=filter_val,
+                ),
+            )
+
+    # 10. Default: NEW_QUERY
+    fresh = _fallback_heuristic_plan(question, metadata, resolved_metric)
+    fresh["dataset_id"] = metadata.dataset_id
+    new_plan_obj = AnalysisPlan.model_validate(fresh)
+    return PlanMutation(
+        mutation_type=PlanMutationType.NEW_QUERY,
+        new_plan=new_plan_obj,
+    )
 
 
 def format_deterministic_result(result: AnalysisResult, question: str) -> str:

@@ -59,6 +59,9 @@ class AggregationFunction(str, Enum):
     AVG = "avg"
     MIN = "min"
     MAX = "max"
+    MEDIAN = "median"
+    STDDEV = "stddev"
+    PERCENTILE_CONT = "percentile_cont"
 
 
 class DateTrunc(str, Enum):
@@ -104,6 +107,21 @@ class AggregationClause(BaseModel):
     alias: Optional[str] = Field(
         default=None, description="Explicit output column alias"
     )
+    quantile: Optional[float] = Field(
+        default=None, description="Quantile parameter for PERCENTILE_CONT (0.0 to 1.0)"
+    )
+
+    @model_validator(mode="after")
+    def validate_quantile_usage(self) -> "AggregationClause":
+        if self.function == AggregationFunction.PERCENTILE_CONT:
+            if self.quantile is None:
+                raise ValueError("PERCENTILE_CONT requires a 'quantile' parameter between 0.0 and 1.0.")
+            if not (0.0 <= self.quantile <= 1.0):
+                raise ValueError(f"quantile must be between 0.0 and 1.0, got {self.quantile}.")
+        else:
+            if self.quantile is not None:
+                raise ValueError(f"function '{self.function.value}' does not accept a 'quantile' parameter.")
+        return self
 
 
 class GroupByClause(BaseModel):
@@ -140,6 +158,59 @@ class OrderByClause(BaseModel):
         return data
 
 
+class DerivedMetricOperation(str, Enum):
+    RATIO = "ratio"
+    PERCENTAGE = "percentage"
+
+
+class DerivedMetric(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation: DerivedMetricOperation = Field(
+        default=DerivedMetricOperation.RATIO, description="Arithmetic ratio or percentage operation"
+    )
+    numerator: str = Field(..., description="Numerator numeric column")
+    denominator: str = Field(..., description="Denominator numeric column")
+    multiplier: float = Field(
+        default=1.0, description="Multiplier (defaults to 1.0 for ratio, 100.0 for percentage)"
+    )
+    alias: str = Field(..., description="Output alias for the derived metric")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_derived_metric(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            op = data.get("operation")
+            if (op == "percentage" or op == DerivedMetricOperation.PERCENTAGE) and "multiplier" not in data:
+                data["multiplier"] = 100.0
+        return data
+
+
+class CorrelationClause(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    column_a: str = Field(..., description="First numeric column for Pearson correlation")
+    column_b: str = Field(..., description="Second numeric column for Pearson correlation")
+    alias: Optional[str] = Field(default=None, description="Output alias for correlation")
+
+
+class PeriodComparisonMode(str, Enum):
+    GROWTH_PCT = "growth_pct"
+    DELTA = "delta"
+
+
+class PeriodComparison(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    date_column: str = Field(..., description="Date/timestamp column for period ordering")
+    metric: str = Field(..., description="Numeric metric column to compare across periods")
+    period: DateTrunc = Field(default=DateTrunc.MONTH, description="Period rollup bucket")
+    mode: PeriodComparisonMode = Field(
+        default=PeriodComparisonMode.GROWTH_PCT, description="Growth percentage or absolute delta"
+    )
+    alias: Optional[str] = Field(default=None, description="Output alias for period metric")
+
+
 class AnalysisPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -147,6 +218,15 @@ class AnalysisPlan(BaseModel):
     filters: list[FilterClause] = Field(default_factory=list, description="Row filter conditions")
     group_by: list[GroupByClause] = Field(default_factory=list, description="Group by dimensions")
     aggregations: list[AggregationClause] = Field(default_factory=list, description="Aggregate metrics")
+    derived_metrics: list[DerivedMetric] = Field(
+        default_factory=list, description="Constrained ratio/percentage derived metrics"
+    )
+    correlations: list[CorrelationClause] = Field(
+        default_factory=list, description="Bivariate Pearson correlation calculations"
+    )
+    period_comparison: Optional[PeriodComparison] = Field(
+        default=None, description="Deterministic period-over-period comparison"
+    )
     order_by: list[OrderByClause] = Field(default_factory=list, description="Sort order clauses")
     limit: int = Field(default=50, ge=1, le=500, description="Max rows to return (clamped 1-500)")
     requires_chart: bool = Field(default=False, description="Whether visualization is requested")

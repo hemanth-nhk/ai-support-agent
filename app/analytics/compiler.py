@@ -14,6 +14,11 @@ from app.analytics.schemas import (
     FilterOperator,
     ColumnProfile,
     DatasetMetadata,
+    DerivedMetric,
+    DerivedMetricOperation,
+    CorrelationClause,
+    PeriodComparison,
+    PeriodComparisonMode,
 )
 
 
@@ -280,7 +285,7 @@ def compile_plan(plan: AnalysisPlan, metadata: DatasetMetadata) -> CompiledQuery
             col_dtype_cat = col_types[target_col]
             col_ident = escape_identifier(target_col)
 
-            if agg.function in (AggregationFunction.SUM, AggregationFunction.AVG):
+            if agg.function in (AggregationFunction.SUM, AggregationFunction.AVG, AggregationFunction.MEDIAN, AggregationFunction.STDDEV, AggregationFunction.PERCENTILE_CONT):
                 if col_dtype_cat != "numeric":
                     raise TypeMismatchError(
                         f"Cannot compute {agg.function.value.upper()} on non-numeric column '{target_col}' (dtype: {col_map[target_col].dtype})."
@@ -304,8 +309,94 @@ def compile_plan(plan: AnalysisPlan, metadata: DatasetMetadata) -> CompiledQuery
                 select_items.append(f"MIN({col_ident}) AS {alias_ident}")
             elif agg.function == AggregationFunction.MAX:
                 select_items.append(f"MAX({col_ident}) AS {alias_ident}")
+            elif agg.function == AggregationFunction.MEDIAN:
+                select_items.append(f"MEDIAN({col_ident}) AS {alias_ident}")
+            elif agg.function == AggregationFunction.STDDEV:
+                select_items.append(f"STDDEV_SAMP({col_ident}) AS {alias_ident}")
+            elif agg.function == AggregationFunction.PERCENTILE_CONT:
+                select_items.append(f"QUANTILE_CONT({col_ident}, {float(agg.quantile or 0.5)}) AS {alias_ident}")
         else:
             select_items.append(f"COUNT(*) AS {alias_ident}")
+
+    # 3.1 Validate and Compile Correlations
+    for c in plan.correlations:
+        if c.column_a not in col_map:
+            raise ColumnNotFoundError(f"Correlation column '{c.column_a}' does not exist in dataset.")
+        if c.column_b not in col_map:
+            raise ColumnNotFoundError(f"Correlation column '{c.column_b}' does not exist in dataset.")
+        if col_types[c.column_a] != "numeric":
+            raise TypeMismatchError(f"Correlation requires numeric column, got '{c.column_a}' (dtype: {col_map[c.column_a].dtype}).")
+        if col_types[c.column_b] != "numeric":
+            raise TypeMismatchError(f"Correlation requires numeric column, got '{c.column_b}' (dtype: {col_map[c.column_b].dtype}).")
+
+        alias = c.alias or f"corr_{c.column_a}_{c.column_b}"
+        alias_ident = escape_identifier(alias)
+        available_sort_targets.add(alias)
+        col_a_ident = escape_identifier(c.column_a)
+        col_b_ident = escape_identifier(c.column_b)
+        select_items.append(f"NULLIF(CORR({col_a_ident}, {col_b_ident}), 'nan'::DOUBLE) AS {alias_ident}")
+
+    # 3.2 Validate and Compile Derived Metrics (Ratios & Percentages)
+    for dm in plan.derived_metrics:
+        if dm.numerator not in col_map:
+            raise ColumnNotFoundError(f"Derived metric numerator '{dm.numerator}' does not exist in dataset.")
+        if dm.denominator not in col_map:
+            raise ColumnNotFoundError(f"Derived metric denominator '{dm.denominator}' does not exist in dataset.")
+        if col_types[dm.numerator] != "numeric":
+            raise TypeMismatchError(f"Derived metric numerator '{dm.numerator}' must be numeric (dtype: {col_map[dm.numerator].dtype}).")
+        if col_types[dm.denominator] != "numeric":
+            raise TypeMismatchError(f"Derived metric denominator '{dm.denominator}' must be numeric (dtype: {col_map[dm.denominator].dtype}).")
+
+        alias_ident = escape_identifier(dm.alias)
+        available_sort_targets.add(dm.alias)
+        num_ident = escape_identifier(dm.numerator)
+        den_ident = escape_identifier(dm.denominator)
+        mult = float(dm.multiplier)
+        select_items.append(f"( (SUM({num_ident}) * {mult}) / NULLIF(SUM({den_ident}), 0) ) AS {alias_ident}")
+
+    # 3.3 Validate and Compile Period Comparison (Period-over-Period with LAG)
+    if plan.period_comparison is not None:
+        pc = plan.period_comparison
+        if pc.date_column not in col_map:
+            raise ColumnNotFoundError(f"Period comparison date column '{pc.date_column}' not found.")
+        if col_types[pc.date_column] != "datetime":
+            raise TypeMismatchError(f"Period comparison requires datetime column, got '{pc.date_column}' (dtype: {col_map[pc.date_column].dtype}).")
+        if pc.metric not in col_map:
+            raise ColumnNotFoundError(f"Period comparison metric column '{pc.metric}' not found.")
+        if col_types[pc.metric] != "numeric":
+            raise TypeMismatchError(f"Period comparison metric '{pc.metric}' must be numeric (dtype: {col_map[pc.metric].dtype}).")
+
+        date_ident = escape_identifier(pc.date_column)
+        metric_ident = escape_identifier(pc.metric)
+        alias = pc.alias or (f"{pc.metric}_growth_pct" if pc.mode == PeriodComparisonMode.GROWTH_PCT else f"{pc.metric}_delta")
+        alias_ident = escape_identifier(alias)
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        clamped_limit = max(1, min(plan.limit, 500))
+
+        if pc.mode == PeriodComparisonMode.GROWTH_PCT:
+            comp_expr = "( (current_val - LAG(current_val) OVER (ORDER BY period)) * 100.0 ) / NULLIF(ABS(LAG(current_val) OVER (ORDER BY period)), 0)"
+        else:
+            comp_expr = "(current_val - LAG(current_val) OVER (ORDER BY period))"
+
+        sql = (
+            f"WITH period_summary AS (\n"
+            f"  SELECT\n"
+            f"    DATE_TRUNC('{pc.period.value}', {date_ident}) AS period,\n"
+            f"    SUM({metric_ident}) AS current_val\n"
+            f"  FROM source_table\n"
+            f"  {where_sql}\n"
+            f"  GROUP BY 1\n"
+            f")\n"
+            f"SELECT\n"
+            f"  period,\n"
+            f"  current_val,\n"
+            f"  LAG(current_val) OVER (ORDER BY period) AS prev_val,\n"
+            f"  {comp_expr} AS {alias_ident}\n"
+            f"FROM period_summary\n"
+            f"ORDER BY period ASC\n"
+            f"LIMIT {clamped_limit}"
+        )
+        return CompiledQuery(sql=sql, parameters=parameters)
 
     # Projection Fallback: If no group_by and no aggregations, select all columns safely
     if not select_items:
@@ -313,7 +404,7 @@ def compile_plan(plan: AnalysisPlan, metadata: DatasetMetadata) -> CompiledQuery
         for c in col_map:
             available_sort_targets.add(c)
     else:
-        distinct_kw = "DISTINCT " if (plan.group_by and not plan.aggregations) else ""
+        distinct_kw = "DISTINCT " if (plan.group_by and not plan.aggregations and not plan.derived_metrics and not plan.correlations) else ""
         select_sql = f"SELECT {distinct_kw}{', '.join(select_items)}"
 
     # 4. Construct FROM and WHERE

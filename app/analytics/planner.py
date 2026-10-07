@@ -20,6 +20,11 @@ from app.analytics.schemas import (
     FilterClause,
     FilterOperator,
     DateTrunc,
+    DerivedMetric,
+    DerivedMetricOperation,
+    CorrelationClause,
+    PeriodComparison,
+    PeriodComparisonMode,
 )
 from app.analytics.compiler import classify_dtype
 
@@ -70,8 +75,17 @@ AnalysisPlan JSON SCHEMA:
     {"column": "string", "date_trunc": "year" | "quarter" | "month" | "day" | null}
   ],
   "aggregations": [
-    {"column": "string" | null, "function": "count" | "count_distinct" | "sum" | "avg" | "min" | "max", "alias": "string"}
+    {"column": "string" | null, "function": "count" | "count_distinct" | "sum" | "avg" | "min" | "max" | "median" | "stddev" | "percentile_cont", "quantile": float | null, "alias": "string"}
   ],
+  "derived_metrics": [
+    {"operation": "ratio" | "percentage", "numerator": "string", "denominator": "string", "multiplier": 100.0, "alias": "string"}
+  ],
+  "correlations": [
+    {"column_a": "string", "column_b": "string", "alias": "string"}
+  ],
+  "period_comparison": {
+    "date_column": "string", "metric": "string", "period": "year" | "quarter" | "month" | "day", "mode": "growth_pct" | "delta", "alias": "string"
+  } | null,
   "order_by": [
     {"target": "string", "descending": true | false}
   ],
@@ -83,15 +97,15 @@ AnalysisPlan JSON SCHEMA:
 CRITICAL RULES:
 1. Output ONLY a valid JSON object matching the AnalysisPlan schema. Do NOT output markdown explanations or commentary.
 2. ONLY reference column names that exist in the provided schema. NEVER invent column names.
-3. For aggregations with 'sum', 'avg', 'min', 'max', the 'column' MUST be a numeric column (type: numeric). NEVER compute 'sum' or 'avg' on string/categorical columns!
-4. The group_by 'column' must be the categorical/dimension column (type: string), NOT the metric column.
-   Example: For "Which region had the highest total revenue?", group_by column is "region", and aggregation is sum of "revenue" with alias "total_revenue".
-5. Do NOT add filters unless the user explicitly requested filtering by a specific value (e.g., status == "delivered"). If there is no filter, "filters" MUST be []. NEVER filter a column against its own name.
-6. In "order_by", the sort field must be named "target" (matching group_by column or aggregation alias), and direction is boolean "descending" (true for highest/top/desc/best, false for lowest/asc/worst).
-7. Do NOT output extra fields like "name", "type", or "aggregation". Use the exact keys shown above.
-8. If the question asks for a ranking ("top", "highest", "best"), group by the entity and order by the metric descending (descending: true) with limit (default 5 or 10).
-9. If the user asks for a simple total or average without breakdown, use an aggregation without group_by.
-10. If the question asks to 'chart', 'plot', 'graph', or 'visualize', set 'requires_chart': true, and specify 'chart_type' if a specific chart is requested.
+3. For aggregations with 'sum', 'avg', 'min', 'max', 'median', 'stddev', the 'column' MUST be a numeric column (type: numeric). NEVER compute 'sum' or 'avg' on string/categorical columns!
+4. For 'percentile_cont', provide 'quantile' as a float between 0.0 and 1.0 (e.g. 0.5 for median, 0.75 for 75th percentile).
+5. For derived metrics (ratios, margins, percentages, e.g. profit margin = profit / revenue * 100), use 'derived_metrics' with 'numerator' and 'denominator'.
+6. For bivariate correlation between two numeric columns, use 'correlations' with 'column_a' and 'column_b'.
+7. For period comparisons (e.g. Month-over-Month revenue growth), use 'period_comparison' with 'date_column', 'metric', 'period', and 'mode' ('growth_pct' or 'delta').
+8. The group_by 'column' must be the categorical/dimension column (type: string), NOT the metric column.
+9. Do NOT add filters unless the user explicitly requested filtering by a specific value (e.g., status == "delivered").
+10. In "order_by", the sort field must be named "target" (matching group_by column or aggregation alias), and direction is boolean "descending" (true for highest/top/desc/best, false for lowest/asc/worst).
+11. If the question asks to 'chart', 'plot', 'graph', or 'visualize', set 'requires_chart': true, and specify 'chart_type' if a specific chart is requested.
 """
 
 
@@ -241,6 +255,71 @@ def _fallback_heuristic_plan(
     if not target_metric and num_cols:
         target_metric = num_cols[0]
 
+    date_cols = [c.name for c in metadata.profile.columns if classify_dtype(c.dtype, c.name) == "datetime"]
+
+    # Period comparison fallback (growth %, MoM, YoY)
+    if any(k in lowered for k in ("growth", "mom", "yoy", "month-over-month", "period")) and date_cols and (target_metric or num_cols):
+        m = target_metric or num_cols[0]
+        return {
+            "dataset_id": metadata.dataset_id,
+            "period_comparison": {
+                "date_column": date_cols[0],
+                "metric": m,
+                "period": "month",
+                "mode": "growth_pct",
+                "alias": f"{m}_mom_growth",
+            },
+        }
+
+    # Derived metric / ratio fallback (e.g. profit margin)
+    if any(k in lowered for k in ("margin", "profit margin", "ratio", "percentage of revenue")):
+        num_candidates = [c for c in num_cols if "profit" in c.lower()] or num_cols[:1]
+        den_candidates = [c for c in num_cols if "revenue" in c.lower() or "sales" in c.lower()] or num_cols[1:2]
+        if num_candidates and den_candidates and num_candidates[0] != den_candidates[0]:
+            group_by_list = []
+            for sc in str_cols:
+                if sc.lower() in lowered:
+                    group_by_list.append({"column": sc})
+                    break
+            plan_dict = {
+                "dataset_id": metadata.dataset_id,
+                "derived_metrics": [{
+                    "operation": "percentage",
+                    "numerator": num_candidates[0],
+                    "denominator": den_candidates[0],
+                    "multiplier": 100.0,
+                    "alias": f"{num_candidates[0]}_margin_pct",
+                }],
+            }
+            if group_by_list:
+                plan_dict["group_by"] = group_by_list
+            return plan_dict
+
+    # Correlation fallback
+    if ("correlation" in lowered or "correlated" in lowered or "relationship" in lowered) and len(num_cols) >= 2:
+        return {
+            "dataset_id": metadata.dataset_id,
+            "correlations": [{
+                "column_a": num_cols[0],
+                "column_b": num_cols[1],
+                "alias": f"corr_{num_cols[0]}_{num_cols[1]}",
+            }],
+        }
+
+    # Statistical fallback (median / stddev)
+    if "median" in lowered and (target_metric or num_cols):
+        m = target_metric or num_cols[0]
+        return {
+            "dataset_id": metadata.dataset_id,
+            "aggregations": [{"column": m, "function": "median", "alias": f"median_{m}"}],
+        }
+    if ("stddev" in lowered or "standard deviation" in lowered) and (target_metric or num_cols):
+        m = target_metric or num_cols[0]
+        return {
+            "dataset_id": metadata.dataset_id,
+            "aggregations": [{"column": m, "function": "stddev", "alias": f"stddev_{m}"}],
+        }
+
     # Ranking query: e.g. "top products", "which region had highest revenue"
     if any(k in lowered for k in ("top", "highest", "best", "most", "lowest", "worst")) and str_cols and target_metric:
         group_col = str_cols[0]
@@ -249,12 +328,30 @@ def _fallback_heuristic_plan(
                 group_col = c
                 break
         desc = not any(k in lowered for k in ("lowest", "worst", "least"))
+        import re
+        top_match = re.search(r"top\s+(\d+)", lowered)
+        limit_val = int(top_match.group(1)) if top_match else 10
         return {
             "dataset_id": metadata.dataset_id,
             "group_by": [{"column": group_col}],
             "aggregations": [{"column": target_metric, "function": "sum", "alias": f"sum_{target_metric}"}],
             "order_by": [{"target": f"sum_{target_metric}", "descending": desc}],
-            "limit": 5,
+            "limit": limit_val,
+        }
+
+    # Grouped query by dimension (e.g. "salary by department", "revenue by region")
+    group_col = None
+    for sc in str_cols:
+        if sc.lower() in lowered or f"by {sc.lower()}" in lowered:
+            group_col = sc
+            break
+    if group_col and (target_metric or num_cols):
+        m = target_metric or num_cols[0]
+        return {
+            "dataset_id": metadata.dataset_id,
+            "group_by": [{"column": group_col}],
+            "aggregations": [{"column": m, "function": "sum", "alias": f"sum_{m}"}],
+            "limit": 50,
         }
 
     # Total / Average query
@@ -300,10 +397,49 @@ def format_deterministic_result(result: AnalysisResult, question: str) -> str:
     rows = result.rows
     cols = result.columns
 
+    # Period comparison result
+    if result.plan.period_comparison:
+        pc = result.plan.period_comparison
+        alias = pc.alias or (f"{pc.metric}_growth_pct" if pc.mode == PeriodComparisonMode.GROWTH_PCT else f"{pc.metric}_delta")
+        latest = rows[-1]
+        p_val = latest.get("period")
+        c_val = latest.get("current_val")
+        comp_val = latest.get(alias)
+        if comp_val is None:
+            comp_str = "baseline / first observed period"
+        elif pc.mode == PeriodComparisonMode.GROWTH_PCT:
+            comp_str = f"{comp_val:+.1f}% vs previous observed period"
+        else:
+            comp_str = f"{comp_val:+g} vs previous observed period"
+        return f"Across {len(rows)} observed periods, the latest period ({p_val}) recorded {pc.metric} of {c_val} ({alias}: {comp_str})."
+
+    # Correlation result
+    if result.plan.correlations and not result.plan.group_by:
+        c = result.plan.correlations[0]
+        alias = c.alias or f"corr_{c.column_a}_{c.column_b}"
+        val = rows[0].get(alias) if rows else None
+        if val is None:
+            return f"The correlation between '{c.column_a}' and '{c.column_b}' is undefined (constant variance or insufficient observations)."
+        desc = "strong positive" if val > 0.7 else ("moderate positive" if val > 0.3 else ("strong negative" if val < -0.7 else ("moderate negative" if val < -0.3 else "weak / near zero")))
+        return f"The Pearson correlation between '{c.column_a}' and '{c.column_b}' is {val:.3f} ({desc} relationship)."
+
+    # Derived metric standalone result
+    if result.plan.derived_metrics and not result.plan.group_by:
+        facts = []
+        for dm in result.plan.derived_metrics:
+            val = rows[0].get(dm.alias)
+            if val is None:
+                facts.append(f"{dm.alias}: unavailable (zero denominator)")
+            elif dm.operation == DerivedMetricOperation.PERCENTAGE or "pct" in dm.alias:
+                facts.append(f"{dm.alias}: {val:.2f}%")
+            else:
+                facts.append(f"{dm.alias}: {val:.4f}")
+        return "Based on the dataset, " + ", ".join(facts) + "."
+
     # Single scalar aggregation (e.g. total revenue or avg score)
     if result.row_count == 1 and not result.plan.group_by:
         row = rows[0]
-        facts = [f"{k}: {v}" for k, v in row.items()]
+        facts = [f"{k}: {v if v is not None else 'null'}" for k, v in row.items()]
         return f"Based on the dataset, " + ", ".join(facts) + "."
 
     # Grouped / Ranked query (e.g. top regions by revenue)

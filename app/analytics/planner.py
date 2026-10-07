@@ -553,10 +553,82 @@ def format_deterministic_result(result: AnalysisResult, question: str) -> str:
     Guarantees numerical correctness independently of LLM whims.
     """
     if result.row_count == 0:
+        if result.plan.outlier_analysis:
+            oa = result.plan.outlier_analysis
+            return f"No statistical outliers detected in '{oa.column}' at threshold {oa.threshold} standard deviations across the dataset."
         return "The query completed successfully, but no matching records were found in the dataset."
 
     rows = result.rows
     cols = result.columns
+
+    # Phase 7: Outlier Analysis result
+    if result.plan.outlier_analysis:
+        oa = result.plan.outlier_analysis
+        prefix = oa.alias or oa.column
+        mean_col = f"mean_{prefix}"
+        stddev_col = f"stddev_{prefix}"
+        z_col = f"z_score_{prefix}"
+
+        # Zero variance check
+        first_row = rows[0] if rows else {}
+        stddev_val = first_row.get(stddev_col)
+        if stddev_val is None or stddev_val == 0:
+            return f"Unable to calculate outliers: '{oa.column}' has zero variance or insufficient observations across the dataset."
+
+        outlier_count = sum(1 for r in rows if r.get("is_outlier") is True)
+        if outlier_count > 0:
+            top_row = rows[0]
+            top_val = top_row.get(oa.column)
+            top_z = top_row.get(z_col)
+            mean_val = top_row.get(mean_col)
+            z_str = f"{top_z:+.2f}" if isinstance(top_z, (int, float)) else str(top_z)
+            return (
+                f"Identified {outlier_count} statistical outlier{'s' if outlier_count != 1 else ''} in '{oa.column}' "
+                f"exceeding {oa.threshold} standard deviations (most extreme: value {top_val} with z-score {z_str} vs mean {mean_val})."
+            )
+        else:
+            return f"No statistical outliers detected in '{oa.column}' at threshold {oa.threshold} standard deviations across {result.row_count} observed records."
+
+    # Phase 7: Rolling Window result
+    if result.plan.rolling_windows and not result.plan.group_by:
+        rw = result.plan.rolling_windows[0]
+        alias = rw.alias or f"rolling_{rw.function.value}_{rw.column}"
+        w_size = rw.preceding + 1
+        valid_vals = [
+            (r.get(alias), r.get(rw.order_by))
+            for r in rows
+            if isinstance(r.get(alias), (int, float))
+        ]
+        if valid_vals:
+            peak_val, peak_order = max(valid_vals, key=lambda x: x[0])
+            latest_val, latest_order = valid_vals[-1]
+            return (
+                f"Across {len(rows)} observed intervals, the {w_size}-period rolling {rw.function.value} of '{rw.column}' "
+                f"peaked at {peak_val:.2f} (at {peak_order}), with the latest value at {latest_val:.2f}."
+            )
+        return f"Calculated {w_size}-period rolling {rw.function.value} for '{rw.column}' across {len(rows)} records."
+
+    # Phase 7: Cumulative Metric result
+    if result.plan.cumulative_metrics and not result.plan.group_by:
+        cm = result.plan.cumulative_metrics[0]
+        alias = cm.alias or f"cumulative_{cm.function.value}_{cm.column if cm.column else 'rows'}"
+        target_name = cm.column or "records"
+        latest_row = rows[-1]
+        final_val = latest_row.get(alias)
+        end_order = latest_row.get(cm.order_by)
+        if final_val is not None:
+            val_str = f"{final_val:,.2f}" if isinstance(final_val, float) else f"{final_val:,}" if isinstance(final_val, int) else str(final_val)
+            return f"Across {len(rows)} observed intervals up to {end_order}, cumulative {cm.function.value} of {target_name} reached {val_str}."
+        return f"Calculated cumulative {cm.function.value} of {target_name} across {len(rows)} records."
+
+    # Phase 7: Quantile Segmentation result
+    if result.plan.quantiles and not result.plan.group_by:
+        q = result.plan.quantiles[0]
+        bucket_label = "quartiles" if q.num_quantiles == 4 else ("quintiles" if q.num_quantiles == 5 else ("deciles" if q.num_quantiles == 10 else f"{q.num_quantiles} quantile tiers"))
+        vals = [r.get(q.column) for r in rows if isinstance(r.get(q.column), (int, float))]
+        if vals:
+            return f"Segmented {len(rows)} records into {q.num_quantiles} {bucket_label} based on '{q.column}' (ranging from {min(vals)} to {max(vals)})."
+        return f"Segmented {len(rows)} records into {q.num_quantiles} {bucket_label} based on '{q.column}'."
 
     # Period comparison result
     if result.plan.period_comparison:

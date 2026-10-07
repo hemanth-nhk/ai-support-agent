@@ -25,6 +25,12 @@ from app.analytics.schemas import (
     CorrelationClause,
     PeriodComparison,
     PeriodComparisonMode,
+    RollingWindowSpec,
+    WindowFunction,
+    CumulativeSpec,
+    CumulativeFunction,
+    OutlierSpec,
+    QuantileSpec,
 )
 from app.analytics.compiler import classify_dtype
 
@@ -86,6 +92,18 @@ AnalysisPlan JSON SCHEMA:
   "period_comparison": {
     "date_column": "string", "metric": "string", "period": "year" | "quarter" | "month" | "day", "mode": "growth_pct" | "delta", "alias": "string"
   } | null,
+  "rolling_windows": [
+    {"function": "avg" | "sum" | "min" | "max", "column": "string", "order_by": "string", "preceding": int, "partition_by": ["string"], "alias": "string"}
+  ],
+  "cumulative_metrics": [
+    {"function": "sum" | "avg" | "count", "column": "string" | null, "order_by": "string", "partition_by": ["string"], "alias": "string"}
+  ],
+  "outlier_analysis": {
+    "column": "string", "threshold": float, "partition_by": ["string"], "filter_outliers_only": true | false, "alias": "string"
+  } | null,
+  "quantiles": [
+    {"column": "string", "num_quantiles": int, "order_descending": true | false, "partition_by": ["string"], "alias": "string"}
+  ],
   "order_by": [
     {"target": "string", "descending": true | false}
   ],
@@ -102,10 +120,14 @@ CRITICAL RULES:
 5. For derived metrics (ratios, margins, percentages, e.g. profit margin = profit / revenue * 100), use 'derived_metrics' with 'numerator' and 'denominator'.
 6. For bivariate correlation between two numeric columns, use 'correlations' with 'column_a' and 'column_b'.
 7. For period comparisons (e.g. Month-over-Month revenue growth), use 'period_comparison' with 'date_column', 'metric', 'period', and 'mode' ('growth_pct' or 'delta').
-8. The group_by 'column' must be the categorical/dimension column (type: string), NOT the metric column.
-9. Do NOT add filters unless the user explicitly requested filtering by a specific value (e.g., status == "delivered").
-10. In "order_by", the sort field must be named "target" (matching group_by column or aggregation alias), and direction is boolean "descending" (true for highest/top/desc/best, false for lowest/asc/worst).
-11. If the question asks to 'chart', 'plot', 'graph', or 'visualize', set 'requires_chart': true, and specify 'chart_type' if a specific chart is requested.
+8. For rolling/moving window aggregations (e.g. 7-day rolling average), use 'rolling_windows' with 'function', 'column', 'order_by', and 'preceding' (e.g. 6 for 7-day window including current row).
+9. For cumulative/running totals or counts over time, use 'cumulative_metrics' with 'function' ('sum', 'avg', or 'count'), 'order_by', and optional 'column' and 'partition_by'.
+10. For statistical outliers/anomalies (e.g. values > 3 stddev from mean), use 'outlier_analysis' with 'column', 'threshold' (default 3.0), and 'filter_outliers_only'.
+11. For quantile segmentation (e.g. quartiles, deciles, quintiles), use 'quantiles' with 'column' and 'num_quantiles' (4 for quartiles, 5 for quintiles, 10 for deciles).
+12. The group_by 'column' must be the categorical/dimension column (type: string), NOT the metric column.
+13. Do NOT add filters unless the user explicitly requested filtering by a specific value (e.g., status == "delivered").
+14. In "order_by", the sort field must be named "target" (matching group_by column or aggregation alias), and direction is boolean "descending" (true for highest/top/desc/best, false for lowest/asc/worst).
+15. If the question asks to 'chart', 'plot', 'graph', or 'visualize', set 'requires_chart': true, and specify 'chart_type' if a specific chart is requested (use 'line' for moving windows and cumulative trends).
 """
 
 
@@ -306,6 +328,146 @@ def _fallback_heuristic_plan(
             }],
         }
 
+    # Phase 7: Outlier / Anomaly detection fallback
+    outlier_keywords = (
+        "outlier", "outliers", "anomaly", "anomalies", "abnormal", "extreme",
+        "z-score", "z score", "deviation from the mean", "deviations from the mean"
+    )
+    if any(k in lowered for k in outlier_keywords) and (target_metric or num_cols):
+        m = target_metric or num_cols[0]
+        thresh = 3.0
+        thresh_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:stddev|standard deviation|sigma|z-?score)", lowered)
+        if thresh_match:
+            try:
+                thresh = float(thresh_match.group(1))
+            except ValueError:
+                thresh = 3.0
+
+        part_cols = []
+        for sc in str_cols:
+            if f"by {sc.lower()}" in lowered or f"for each {sc.lower()}" in lowered or f"per {sc.lower()}" in lowered:
+                part_cols.append(sc)
+                break
+
+        filter_only = not any(k in lowered for k in ("all rows", "don't filter", "flag all", "keep all"))
+        return {
+            "dataset_id": metadata.dataset_id,
+            "outlier_analysis": {
+                "column": m,
+                "threshold": thresh,
+                "partition_by": part_cols,
+                "filter_outliers_only": filter_only,
+                "alias": m,
+            },
+        }
+
+    # Phase 7: Rolling window fallback (moving average, rolling sum)
+    rolling_keywords = (
+        "rolling", "moving average", "moving avg", "moving sum", "moving total",
+        "rolling average", "rolling avg", "rolling sum", "rolling max", "rolling min"
+    )
+    if any(k in lowered for k in rolling_keywords) and (target_metric or num_cols):
+        m = target_metric or num_cols[0]
+        date_col = date_cols[0] if date_cols else (str_cols[0] if str_cols else [c.name for c in metadata.profile.columns][0])
+        fn = "avg"
+        if "sum" in lowered or "total" in lowered:
+            fn = "sum"
+        elif "min" in lowered:
+            fn = "min"
+        elif "max" in lowered:
+            fn = "max"
+
+        preceding = 6
+        window_match = re.search(r"(\d+)[- ]?(?:day|period|row|month|week)", lowered)
+        if window_match:
+            try:
+                w_val = int(window_match.group(1))
+                preceding = max(1, w_val - 1)
+            except ValueError:
+                preceding = 6
+
+        part_cols = []
+        for sc in str_cols:
+            if f"by {sc.lower()}" in lowered or f"for each {sc.lower()}" in lowered or f"per {sc.lower()}" in lowered:
+                part_cols.append(sc)
+                break
+
+        return {
+            "dataset_id": metadata.dataset_id,
+            "rolling_windows": [{
+                "function": fn,
+                "column": m,
+                "order_by": date_col,
+                "preceding": preceding,
+                "partition_by": part_cols,
+                "alias": f"rolling_{fn}_{m}",
+            }],
+        }
+
+    # Phase 7: Cumulative metric fallback
+    cum_keywords = ("cumulative", "running total", "running sum", "running count", "running avg", "running average")
+    if any(k in lowered for k in cum_keywords) and (target_metric or num_cols):
+        m = target_metric or num_cols[0]
+        date_col = date_cols[0] if date_cols else (str_cols[0] if str_cols else [c.name for c in metadata.profile.columns][0])
+        fn = "sum"
+        if "count" in lowered:
+            fn = "count"
+        elif "avg" in lowered or "average" in lowered:
+            fn = "avg"
+
+        part_cols = []
+        for sc in str_cols:
+            if f"by {sc.lower()}" in lowered or f"for each {sc.lower()}" in lowered or f"per {sc.lower()}" in lowered:
+                part_cols.append(sc)
+                break
+
+        return {
+            "dataset_id": metadata.dataset_id,
+            "cumulative_metrics": [{
+                "function": fn,
+                "column": m if fn != "count" else None,
+                "order_by": date_col,
+                "partition_by": part_cols,
+                "alias": f"cumulative_{fn}_{m if fn != 'count' else 'rows'}",
+            }],
+        }
+
+    # Phase 7: Quantile segmentation fallback
+    quantile_keywords = (
+        "quartile", "quartiles", "decile", "deciles", "quintile", "quintiles",
+        "quantile", "quantiles", "ntile", "spending tier", "spending tiers"
+    )
+    if any(k in lowered for k in quantile_keywords) and (target_metric or num_cols):
+        m = target_metric or num_cols[0]
+        num_q = 4
+        if "decile" in lowered:
+            num_q = 10
+        elif "quintile" in lowered:
+            num_q = 5
+        else:
+            q_match = re.search(r"(\d+)\s*(?:quantile|bucket|tier|segment)", lowered)
+            if q_match:
+                try:
+                    num_q = max(2, min(int(q_match.group(1)), 100))
+                except ValueError:
+                    num_q = 4
+
+        part_cols = []
+        for sc in str_cols:
+            if f"by {sc.lower()}" in lowered or f"for each {sc.lower()}" in lowered or f"per {sc.lower()}" in lowered:
+                part_cols.append(sc)
+                break
+
+        return {
+            "dataset_id": metadata.dataset_id,
+            "quantiles": [{
+                "column": m,
+                "num_quantiles": num_q,
+                "partition_by": part_cols,
+                "alias": f"quantile_{num_q}_{m}",
+            }],
+        }
+
     # Statistical fallback (median / stddev)
     if "median" in lowered and (target_metric or num_cols):
         m = target_metric or num_cols[0]
@@ -328,7 +490,6 @@ def _fallback_heuristic_plan(
                 group_col = c
                 break
         desc = not any(k in lowered for k in ("lowest", "worst", "least"))
-        import re
         top_match = re.search(r"top\s+(\d+)", lowered)
         limit_val = int(top_match.group(1)) if top_match else 10
         return {

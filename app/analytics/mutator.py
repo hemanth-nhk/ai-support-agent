@@ -127,7 +127,13 @@ def apply_plan_mutation(
         if mutation.group_by_delta is None:
             raise MutationError("CHANGE_GROUP_BY requires 'group_by_delta'.")
         new_gb: GroupByClause = mutation.group_by_delta.to_group_by_clause()
+        old_gbs = previous_plan.group_by or []
         plan_dict["group_by"] = [new_gb.model_dump()]
+        if plan_dict.get("order_by"):
+            old_targets = {og.column for og in old_gbs}
+            for ob in plan_dict["order_by"]:
+                if ob.get("target") in old_targets:
+                    ob["target"] = new_gb.column
 
     # 7. ADD_GROUP_BY: Append additional dimension to group_by
     elif mtype == PlanMutationType.ADD_GROUP_BY:
@@ -163,6 +169,19 @@ def apply_plan_mutation(
             raise MutationError("CHANGE_METRIC requires 'metric_delta'.")
         new_agg = mutation.metric_delta.to_aggregation_clause()
         plan_dict["aggregations"] = [new_agg.model_dump()]
+        if plan_dict.get("order_by"):
+            old_aggs = previous_plan.aggregations or []
+            old_targets = set()
+            for oa in old_aggs:
+                if oa.alias:
+                    old_targets.add(oa.alias)
+                if oa.column:
+                    old_targets.add(oa.column)
+            new_target = new_agg.alias or (f"{new_agg.function.value}_{new_agg.column}" if new_agg.column else new_agg.column)
+            if new_target:
+                for ob in plan_dict["order_by"]:
+                    if ob.get("target") in old_targets:
+                        ob["target"] = new_target
 
     # 10. CHANGE_SORT: Replace ordering clauses
     elif mtype == PlanMutationType.CHANGE_SORT:
@@ -182,12 +201,20 @@ def apply_plan_mutation(
         if mutation.rolling_delta is None:
             raise MutationError("ADD_ROLLING requires 'rolling_delta'.")
         plan_dict["rolling_windows"] = [mutation.rolling_delta.model_dump()]
+        plan_dict["group_by"] = []
+        plan_dict["aggregations"] = []
+        if plan_dict.get("order_by"):
+            plan_dict["order_by"] = []
 
     # 13. ADD_CUMULATIVE: Add or update cumulative metric specification
     elif mtype == PlanMutationType.ADD_CUMULATIVE:
         if mutation.cumulative_delta is None:
             raise MutationError("ADD_CUMULATIVE requires 'cumulative_delta'.")
         plan_dict["cumulative_metrics"] = [mutation.cumulative_delta.model_dump()]
+        plan_dict["group_by"] = []
+        plan_dict["aggregations"] = []
+        if plan_dict.get("order_by"):
+            plan_dict["order_by"] = []
 
     # 14. TOGGLE_CHART: Toggle visualization or set chart type
     elif mtype == PlanMutationType.TOGGLE_CHART:

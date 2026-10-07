@@ -87,9 +87,9 @@ def run_agent(
     initial_state["user_message"] = user_message
     if session_id is not None:
         initial_state["session_id"] = session_id
-    if document_id is not _UNSET and document_id is not None:
+    if document_id is not _UNSET:
         initial_state["document_id"] = document_id
-    if dataset_id is not _UNSET and dataset_id is not None:
+    if dataset_id is not _UNSET:
         if dataset_id != initial_state.get("dataset_id"):
             initial_state["active_analysis_plan"] = None
             initial_state["analysis_plan"] = None

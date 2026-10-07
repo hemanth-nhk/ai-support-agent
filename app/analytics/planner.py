@@ -789,12 +789,24 @@ def _fallback_heuristic_mutation(
     if any(k in q_low for k in ("sort by", "order by", "highest first", "lowest first", "ascending", "descending")):
         desc = not any(k in q_low for k in ("lowest", "least", "asc", "ascending"))
         target = None
-        for col in metadata.profile.columns:
-            if col.name.lower() in q_low:
-                target = col.name
-                break
+        # Check active aggregations first to align with projected alias (e.g., sum_revenue)
+        if previous_plan.aggregations:
+            for agg in previous_plan.aggregations:
+                if (agg.column and agg.column.lower() in q_low) or (agg.alias and agg.alias.lower() in q_low):
+                    target = agg.alias or (f"{agg.function.value}_{agg.column}" if agg.column else agg.column)
+                    break
+        if not target and previous_plan.group_by:
+            for gb in previous_plan.group_by:
+                if gb.column.lower() in q_low:
+                    target = gb.column
+                    break
+        if not target:
+            for col in metadata.profile.columns:
+                if col.name.lower() in q_low:
+                    target = col.name
+                    break
         if not target and previous_plan.aggregations:
-            target = previous_plan.aggregations[0].alias or previous_plan.aggregations[0].column
+            target = previous_plan.aggregations[0].alias or (f"{previous_plan.aggregations[0].function.value}_{previous_plan.aggregations[0].column}" if previous_plan.aggregations[0].column else previous_plan.aggregations[0].column)
         if not target and previous_plan.group_by:
             target = previous_plan.group_by[0].column
         return PlanMutation(

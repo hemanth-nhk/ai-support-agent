@@ -379,7 +379,7 @@ def classify_intent(
             has_superlative = bool(_SUPERLATIVE_PATTERNS.search(text))
             metric_specified = any(m.lower() in text for m in candidate_num_metrics)
 
-            if has_superlative and len(candidate_num_metrics) >= 2 and not metric_specified:
+            if not has_active_plan and has_superlative and len(candidate_num_metrics) >= 2 and not metric_specified:
                 return {
                     "intent": INTENT_AMBIGUOUS,
                     "order_id": None,

@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends, Header
 from app.api.schemas import OrderOut, ChatRequest, ChatResponse
 from app.api.auth import require_api_key, check_api_key
 from app.services import order_service
-from app.agent.graph import run_agent
+from app.agent.graph import run_agent, _UNSET
 from app.agent.router import INTENT_DATA_QUERY
 from app.agent.guardrails import validate_input_message, build_validated_envelope, ERROR_ENVELOPE
 from app.config import settings
@@ -68,8 +68,8 @@ def chat(request: ChatRequest, x_api_key: Optional[str] = Header(default=None)):
             previous_state=previous_state,
             api_key=x_api_key,
             session_id=request.session_id,
-            document_id=request.document_id,
-            dataset_id=request.dataset_id,
+            document_id=request.document_id if request.document_id is not None else _UNSET,
+            dataset_id=request.dataset_id if request.dataset_id is not None else _UNSET,
         )
         if request.session_id:
             _sessions[request.session_id] = agent_state

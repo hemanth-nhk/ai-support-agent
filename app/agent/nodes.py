@@ -644,14 +644,21 @@ def dataset_analysis_node(state: AgentState) -> dict:
         return err_res
 
     # 5. Deterministic Result Formatter (User Constraint 4)
-    deterministic_summary = format_deterministic_result(result, effective_question)
+    deterministic_summary = format_deterministic_result(
+        result=result,
+        question=effective_question,
+        previous_plan=previous_plan,
+    )
 
     # 6. Grounded LLM Explanation with Deterministic Guardrail
-    final_answer = deterministic_summary
-    try:
-        from app.agent.llm_client import get_llm
-        llm = get_llm()
-        grounding_prompt = f"""Verified facts from query execution:
+    if previous_plan:
+        final_answer = deterministic_summary
+    else:
+        final_answer = deterministic_summary
+        try:
+            from app.agent.llm_client import get_llm
+            llm = get_llm()
+            grounding_prompt = f"""Verified facts from query execution:
 {deterministic_summary}
 
 User Question: "{effective_question}"
@@ -659,25 +666,25 @@ User Question: "{effective_question}"
 Instruction:
 State the verified findings in a concise, natural sentence. Do not alter, contradict, or invent any numbers or categories."""
 
-        resp = llm.invoke([
-            {"role": "system", "content": "You are a factual data assistant. State the verified query findings directly."},
-            {"role": "user", "content": grounding_prompt},
-        ])
-        candidate_text = resp.content if hasattr(resp, "content") else str(resp)
-        candidate_text = candidate_text.strip()
+            resp = llm.invoke([
+                {"role": "system", "content": "You are a factual data assistant. State the verified query findings directly."},
+                {"role": "user", "content": grounding_prompt},
+            ])
+            candidate_text = resp.content if hasattr(resp, "content") else str(resp)
+            candidate_text = candidate_text.strip()
 
-        # Deterministic Guardrail: LLM explanation must retain the verified lead entity
-        if result.rows and result.plan.group_by:
-            group_col = result.plan.group_by[0].column
-            lead_val = str(result.rows[0].get(group_col, "")).lower()
-            if lead_val and lead_val in candidate_text.lower():
-                final_answer = candidate_text
+            # Deterministic Guardrail: LLM explanation must retain the verified lead entity
+            if result.rows and result.plan.group_by:
+                group_col = result.plan.group_by[0].column
+                lead_val = str(result.rows[0].get(group_col, "")).lower()
+                if lead_val and lead_val in candidate_text.lower():
+                    final_answer = candidate_text
+                else:
+                    final_answer = deterministic_summary
             else:
-                final_answer = deterministic_summary
-        else:
-            final_answer = candidate_text or deterministic_summary
-    except Exception:
-        final_answer = deterministic_summary
+                final_answer = candidate_text or deterministic_summary
+        except Exception:
+            final_answer = deterministic_summary
 
     # 7. Deterministic Visualization Gate (Phase 4 Invariant)
     chart_artifact = None

@@ -890,16 +890,79 @@ def _fallback_heuristic_mutation(
     )
 
 
-def format_deterministic_result(result: AnalysisResult, question: str) -> str:
+def format_deterministic_result(
+    result: AnalysisResult,
+    question: str,
+    previous_plan: Optional[AnalysisPlan] = None,
+) -> str:
     """
     Synthesizes a verifiable, deterministic factual statement from DuckDB results.
     Guarantees numerical correctness independently of LLM whims.
+    If previous_plan is provided, prefixes the grounded finding with conversational context.
     """
+    mutation_prefix = ""
+    if previous_plan is not None:
+        # 1. RESET_ANALYSIS: Filters cleared
+        if previous_plan.filters and not result.plan.filters:
+            if not result.plan.group_by and previous_plan.group_by:
+                mutation_prefix = "Cleared all active filters and groupings. "
+            else:
+                mutation_prefix = "Cleared all active filters. "
+        elif not result.plan.filters and not result.plan.group_by and (previous_plan.filters or previous_plan.group_by):
+            mutation_prefix = "Cleared all active filters and groupings. "
+
+        # 2. ADD_FILTER / CHANGE_FILTER: New or modified filters
+        elif result.plan.filters:
+            prev_filter_set = {
+                (f.column, f.operator.value, str(f.value)) for f in previous_plan.filters
+            }
+            curr_filter_set = {
+                (f.column, f.operator.value, str(f.value)) for f in result.plan.filters
+            }
+            if curr_filter_set != prev_filter_set or len(result.plan.filters) > len(previous_plan.filters):
+                filter_descs = []
+                for f in result.plan.filters:
+                    op_symbol = "=" if f.operator == FilterOperator.EQ else f.operator.value
+                    filter_descs.append(f"{f.column} {op_symbol} '{f.value}'")
+                mutation_prefix = f"Filtered by {' and '.join(filter_descs)}. "
+
+        # 3. CHANGE_METRIC: Aggregation target changed
+        if not mutation_prefix and result.plan.aggregations and previous_plan.aggregations:
+            prev_col = previous_plan.aggregations[0].column
+            curr_col = result.plan.aggregations[0].column
+            prev_fn = previous_plan.aggregations[0].function
+            curr_fn = result.plan.aggregations[0].function
+            if prev_col != curr_col or prev_fn != curr_fn:
+                target_metric = curr_col or curr_fn.value
+                mutation_prefix = f"Switched metric to {target_metric}. "
+
+        # 4. CHANGE_GROUP_BY: Grouping dimension changed
+        if not mutation_prefix and result.plan.group_by:
+            prev_gb = [g.column for g in previous_plan.group_by]
+            curr_gb = [g.column for g in result.plan.group_by]
+            if prev_gb != curr_gb:
+                dim_name = curr_gb[0]
+                filter_ctx = ""
+                if result.plan.filters:
+                    filter_vals = [f"'{f.value}'" for f in result.plan.filters if f.value]
+                    if filter_vals:
+                        filter_col = result.plan.filters[0].column
+                        filter_ctx = f" in {filter_col} {', '.join(filter_vals)}"
+                mutation_prefix = f"Grouped by {dim_name}{filter_ctx}. "
+
+        # 5. CHANGE_SORT: Order target or direction changed
+        if not mutation_prefix and result.plan.order_by and previous_plan.order_by:
+            prev_ob = previous_plan.order_by[0]
+            curr_ob = result.plan.order_by[0]
+            if prev_ob.target != curr_ob.target or prev_ob.descending != curr_ob.descending:
+                dir_label = "descending" if curr_ob.descending else "ascending"
+                mutation_prefix = f"Sorted by {curr_ob.target} ({dir_label}). "
+
     if result.row_count == 0:
         if result.plan.outlier_analysis:
             oa = result.plan.outlier_analysis
-            return f"No statistical outliers detected in '{oa.column}' at threshold {oa.threshold} standard deviations across the dataset."
-        return "The query completed successfully, but no matching records were found in the dataset."
+            return f"{mutation_prefix}No statistical outliers detected in '{oa.column}' at threshold {oa.threshold} standard deviations across the dataset."
+        return f"{mutation_prefix}The query completed successfully, but no matching records were found in the dataset."
 
     rows = result.rows
     cols = result.columns
@@ -1027,6 +1090,28 @@ def format_deterministic_result(result: AnalysisResult, question: str) -> str:
         lead_entity = top_row.get(group_keys[0]) if group_keys else "First item"
         lead_metrics = [f"{m} is {top_row.get(m)}" for m in metric_keys]
 
+        if mutation_prefix:
+            active_filter_ctx = ""
+            if result.plan.filters:
+                filter_vals = [f"'{f.value}'" for f in result.plan.filters if f.value]
+                if filter_vals:
+                    active_filter_ctx = f" in {', '.join(filter_vals)}"
+
+            if len(rows) > 1:
+                statement = (
+                    f"{mutation_prefix}Across {len(rows)} {group_keys[0]}s, "
+                    f"leading {group_keys[0]}{active_filter_ctx} is {lead_entity} with " + ", ".join(lead_metrics) + "."
+                )
+                second_row = rows[1]
+                sec_entity = second_row.get(group_keys[0]) if group_keys else "Second item"
+                sec_metrics = [f"{m} is {second_row.get(m)}" for m in metric_keys]
+                statement += f" Followed by {sec_entity} with " + ", ".join(sec_metrics) + "."
+            else:
+                statement = (
+                    f"{mutation_prefix}Top {group_keys[0]}{active_filter_ctx} is {lead_entity} with " + ", ".join(lead_metrics) + "."
+                )
+            return statement
+
         statement = f"The leading {group_keys[0] if group_keys else 'group'} is {lead_entity} with " + ", ".join(lead_metrics) + "."
 
         if len(rows) > 1:
@@ -1038,4 +1123,6 @@ def format_deterministic_result(result: AnalysisResult, question: str) -> str:
         return statement
 
     # Table listing
+    if mutation_prefix:
+        return f"{mutation_prefix}Displaying full dataset across {result.row_count} records."
     return f"The query returned {result.row_count} rows across {len(cols)} columns."

@@ -10,6 +10,7 @@ a malformed or unexpected structured payload were ever introduced upstream,
 validation failure here means we fail closed with status="error" -- never
 a guessed answer.
 """
+from typing import Optional
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
 VALID_STATUSES = {"ok", "not_found", "out_of_scope", "clarification", "needs_clarification", "error"}
@@ -32,6 +33,7 @@ class ResponseEnvelope(BaseModel):
     tool_used: str
     retrieval_count: int
     status: str
+    chart: Optional[dict] = None
 
     @field_validator("status")
     @classmethod
@@ -101,6 +103,7 @@ ERROR_ENVELOPE = {
     "tool_used": "none",
     "retrieval_count": 0,
     "status": "error",
+    "chart": None,
 }
 
 
@@ -127,6 +130,7 @@ def build_validated_envelope(agent_state: dict) -> dict:
             tool_used=agent_state.get("tool_used", "none"),
             retrieval_count=agent_state.get("retrieval_count", 0),
             status=agent_state.get("status", "error"),
+            chart=agent_state.get("chart_artifact"),
         )
         return envelope.model_dump()
     except ValidationError:

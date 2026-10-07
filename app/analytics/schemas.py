@@ -163,3 +163,13 @@ class AnalysisResult(BaseModel):
     truncated: bool = False
     columns: list[str]
     execution_time_ms: float
+
+
+class ChartArtifact(BaseModel):
+    chart_id: str
+    chart_type: Literal["bar", "line", "scatter", "histogram"]
+    filename: str
+    title: str
+    width_px: int
+    height_px: int
+    url: str

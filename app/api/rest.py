@@ -49,7 +49,7 @@ def get_customer_orders(customer_id: int):
 _sessions: dict[str, dict] = {}
 
 
-@router.post("/chat", response_model=ChatResponse)
+@router.post("/chat", response_model=ChatResponse, response_model_exclude_none=True)
 def chat(request: ChatRequest, x_api_key: Optional[str] = Header(default=None)):
     logger.info("Chat request received (length=%d, session_id=%s)", len(request.message), request.session_id)
 
@@ -85,3 +85,17 @@ def chat(request: ChatRequest, x_api_key: Optional[str] = Header(default=None)):
 
     envelope = build_validated_envelope(agent_state)
     return envelope
+
+
+@router.get("/charts/{session_id}/{chart_id}")
+def get_chart_artifact(session_id: str, chart_id: str):
+    from fastapi.responses import FileResponse
+    from app.analytics.visualizer import resolve_chart_file, ChartSecurityError
+
+    try:
+        chart_path = resolve_chart_file(session_id=session_id, chart_id=chart_id)
+        return FileResponse(chart_path, media_type="image/png")
+    except (ChartSecurityError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid chart request or security violation.")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Chart not found.")

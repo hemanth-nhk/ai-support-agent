@@ -34,6 +34,7 @@ class Settings(BaseSettings):
 
     # --- Tabular Analytics / Datasets ---
     datasets_dir: str = str(BASE_DIR / "data" / "datasets")
+    charts_dir: str = str(BASE_DIR / "data" / "charts")
     max_dataset_file_size_mb: int = 50
 
 

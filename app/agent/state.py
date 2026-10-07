@@ -31,6 +31,7 @@ class AgentState(TypedDict, total=False):
     retrieval_count: int
     tool_result: Optional[dict]
     tool_used: str
+    chart_artifact: Optional[dict]
     final_response: str
     status: str                    # "ok" | "not_found" | "out_of_scope" | "clarification" | "needs_clarification" | "error"
     api_key: Optional[str]

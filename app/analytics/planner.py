@@ -76,7 +76,8 @@ AnalysisPlan JSON SCHEMA:
     {"target": "string", "descending": true | false}
   ],
   "limit": 50,
-  "requires_chart": false
+  "requires_chart": false,
+  "chart_type": null | "bar" | "line" | "scatter" | "histogram"
 }
 
 CRITICAL RULES:
@@ -90,6 +91,7 @@ CRITICAL RULES:
 7. Do NOT output extra fields like "name", "type", or "aggregation". Use the exact keys shown above.
 8. If the question asks for a ranking ("top", "highest", "best"), group by the entity and order by the metric descending (descending: true) with limit (default 5 or 10).
 9. If the user asks for a simple total or average without breakdown, use an aggregation without group_by.
+10. If the question asks to 'chart', 'plot', 'graph', or 'visualize', set 'requires_chart': true, and specify 'chart_type' if a specific chart is requested.
 """
 
 
@@ -176,6 +178,20 @@ User Question: "{question}"
     if any(w in question.lower() for w in ("best", "top", "highest", "most", "greatest", "leading")):
         for ob in plan.order_by:
             ob.descending = True
+
+    # 4. Deterministic chart intent and explicit chart type detection
+    q_low = question.lower()
+    chart_keywords = ("chart", "plot", "graph", "visualize", "visualization", "histogram", "scatter")
+    if any(w in q_low for w in chart_keywords):
+        plan.requires_chart = True
+        if "scatter" in q_low:
+            plan.chart_type = "scatter"
+        elif "histogram" in q_low or "distribution" in q_low:
+            plan.chart_type = "histogram"
+        elif "line" in q_low or "trend" in q_low:
+            plan.chart_type = "line"
+        elif "bar" in q_low:
+            plan.chart_type = "bar"
 
     return plan
 

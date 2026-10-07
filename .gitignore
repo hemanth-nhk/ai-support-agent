@@ -6,6 +6,7 @@ __pycache__/
 *.db
 data/chroma_store/
 data/datasets/
+data/charts/
 .pytest_cache/
 *.egg-info/
 .vscode/

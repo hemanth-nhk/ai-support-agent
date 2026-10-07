@@ -1,6 +1,8 @@
 from typing import Optional
 from pydantic import BaseModel, Field
 
+from app.analytics.schemas import ChartArtifact
+
 
 class OrderOut(BaseModel):
     id: int
@@ -31,6 +33,7 @@ class ChatResponse(BaseModel):
     tool_used: str
     retrieval_count: int
     status: str  # "ok" | "not_found" | "out_of_scope" | "clarification" | "needs_clarification" | "error"
+    chart: Optional[ChartArtifact] = None
 
 
 class DocumentUploadResponse(BaseModel):

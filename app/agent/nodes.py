@@ -646,6 +646,37 @@ State the verified findings in a concise, natural sentence. Do not alter, contra
     except Exception:
         final_answer = deterministic_summary
 
+    # 7. Deterministic Visualization Gate (Phase 4 Invariant)
+    chart_artifact = None
+    if plan.requires_chart:
+        from app.analytics.visualizer import validate_chart_compatibility, render_chart
+
+        is_explicit = bool(
+            plan.chart_type
+            and any(t in effective_question.lower() for t in ("bar", "line", "scatter", "histogram"))
+        )
+        is_compat, eff_type, err_reason = validate_chart_compatibility(
+            result=result,
+            requested_type=plan.chart_type,
+            is_explicit=is_explicit,
+        )
+
+        if is_compat and eff_type:
+            try:
+                active_session_id = session_id or metadata.session_id
+                artifact = render_chart(
+                    result=result,
+                    chart_type=eff_type,
+                    session_id=active_session_id,
+                )
+                chart_artifact = artifact.model_dump()
+            except Exception as e:
+                logger.warning(f"Chart rendering failed: {e}")
+                chart_artifact = None
+        else:
+            if is_explicit and err_reason:
+                final_answer += f" (Note: Unable to render requested {plan.chart_type} chart: {err_reason})"
+
     return {
         "final_response": final_answer,
         "tool_used": "execute_analysis_plan",
@@ -659,6 +690,7 @@ State the verified findings in a concise, natural sentence. Do not alter, contra
         },
         "analysis_plan": plan.model_dump(),
         "analysis_result": result.model_dump(),
+        "chart_artifact": chart_artifact,
         "status": "ok",
         "awaiting_entity": None,
         "pending_analysis": None,

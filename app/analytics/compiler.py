@@ -24,6 +24,7 @@ from app.analytics.schemas import (
     CumulativeFunction,
     CumulativeSpec,
     QuantileSpec,
+    OutlierSpec,
 )
 
 
@@ -402,6 +403,86 @@ def compile_plan(plan: AnalysisPlan, metadata: DatasetMetadata) -> CompiledQuery
             f"LIMIT {clamped_limit}"
         )
         return CompiledQuery(sql=sql, parameters=parameters)
+
+    # 3.35 Validate and Compile Outlier Analysis (Z-score anomaly detection CTE)
+    if plan.outlier_analysis is not None:
+        oa = plan.outlier_analysis
+        if oa.column not in col_map:
+            raise ColumnNotFoundError(f"Outlier analysis column '{oa.column}' not found in dataset.")
+        if col_types[oa.column] != "numeric":
+            raise TypeMismatchError(
+                f"Outlier analysis requires numeric column, got '{oa.column}' (dtype: {col_map[oa.column].dtype})."
+            )
+        for p in oa.partition_by:
+            if p not in col_map:
+                raise ColumnNotFoundError(f"Outlier analysis partition column '{p}' not found in dataset.")
+
+        col_ident = escape_identifier(oa.column)
+        part_sql = f"PARTITION BY {', '.join(escape_identifier(p) for p in oa.partition_by)}" if oa.partition_by else ""
+        prefix = oa.alias or oa.column
+        mean_alias = escape_identifier(f"mean_{prefix}")
+        stddev_alias = escape_identifier(f"stddev_{prefix}")
+        z_score_alias = escape_identifier(f"z_score_{prefix}")
+        is_outlier_alias = escape_identifier("is_outlier")
+
+        threshold_val = float(oa.threshold)
+        clamped_limit = max(1, min(plan.limit, 500))
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        # Outer where condition to filter outliers only
+        if oa.filter_outliers_only:
+            outer_where = f"WHERE _std_val IS NOT NULL AND _std_val > 0 AND ABS(({col_ident} - _mean_val) / _std_val) >= {threshold_val}"
+        else:
+            outer_where = ""
+
+        # Projected columns: all source columns + outlier statistical columns
+        source_cols = [escape_identifier(c) for c in col_map]
+        select_cols = (
+            source_cols
+            + [
+                f"ROUND(_mean_val, 4) AS {mean_alias}",
+                f"ROUND(_std_val, 4) AS {stddev_alias}",
+                f"CASE WHEN _std_val IS NULL OR _std_val = 0 THEN NULL ELSE ROUND(({col_ident} - _mean_val) / _std_val, 4) END AS {z_score_alias}",
+                f"CASE WHEN _std_val IS NULL OR _std_val = 0 THEN FALSE WHEN ABS(({col_ident} - _mean_val) / _std_val) >= {threshold_val} THEN TRUE ELSE FALSE END AS {is_outlier_alias}",
+            ]
+        )
+
+        # Ordering
+        if plan.order_by:
+            valid_targets = set(col_map.keys()) | {f"mean_{prefix}", f"stddev_{prefix}", f"z_score_{prefix}", "is_outlier"}
+            order_parts = []
+            for o in plan.order_by:
+                if o.target not in valid_targets:
+                    raise PlanValidationError(
+                        f"Order by target '{o.target}' is not in selected outlier projection. Available: {sorted(valid_targets)}."
+                    )
+                target_ident = escape_identifier(o.target)
+                direction = "DESC" if o.descending else "ASC"
+                order_parts.append(f"{target_ident} {direction} NULLS LAST")
+            order_sql = f"ORDER BY {', '.join(order_parts)}"
+        else:
+            # Default ordering: most extreme outliers first
+            order_sql = f"ORDER BY CASE WHEN _std_val IS NULL OR _std_val = 0 THEN 0 ELSE ABS(({col_ident} - _mean_val) / _std_val) END DESC, {col_ident} DESC"
+
+        sql_parts = [
+            f"WITH stats_cte AS (",
+            f"  SELECT",
+            f"    *,",
+            f"    AVG({col_ident}) OVER ({part_sql}) AS _mean_val,",
+            f"    STDDEV_SAMP({col_ident}) OVER ({part_sql}) AS _std_val",
+            f"  FROM source_table",
+            f"  {where_sql}",
+            f")",
+            f"SELECT",
+            f"  {', '.join(select_cols)}",
+            f"FROM stats_cte",
+        ]
+        if outer_where:
+            sql_parts.append(outer_where)
+        sql_parts.append(order_sql)
+        sql_parts.append(f"LIMIT {clamped_limit}")
+
+        return CompiledQuery(sql="\n".join(sql_parts), parameters=parameters)
 
     # 3.4 Validate and Compile Rolling Windows
     for rw in plan.rolling_windows:

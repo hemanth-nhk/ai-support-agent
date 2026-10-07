@@ -211,6 +211,70 @@ class PeriodComparison(BaseModel):
     alias: Optional[str] = Field(default=None, description="Output alias for period metric")
 
 
+# ---------------------------------------------------------------------------
+# Phase 7: Windowed Analytics, Cumulative Totals, Outliers & Quantiles
+# ---------------------------------------------------------------------------
+
+class WindowFunction(str, Enum):
+    AVG = "avg"
+    SUM = "sum"
+    MIN = "min"
+    MAX = "max"
+
+
+class RollingWindowSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    function: WindowFunction = Field(..., description="Aggregation function over the window")
+    column: str = Field(..., description="Target numeric column")
+    order_by: str = Field(..., description="Date/timestamp or sequential order column")
+    preceding: int = Field(..., ge=1, le=365, description="Number of preceding rows/periods to include")
+    partition_by: list[str] = Field(default_factory=list, description="Categorical dimension columns to partition the window")
+    alias: Optional[str] = Field(default=None, description="Output alias for the rolling metric")
+
+
+class CumulativeFunction(str, Enum):
+    SUM = "sum"
+    AVG = "avg"
+    COUNT = "count"
+
+
+class CumulativeSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    function: CumulativeFunction = Field(default=CumulativeFunction.SUM, description="Cumulative accumulation function")
+    column: Optional[str] = Field(default=None, description="Numeric target column (required for sum/avg; optional for count)")
+    order_by: str = Field(..., description="Date or chronological sequence column")
+    partition_by: list[str] = Field(default_factory=list, description="Optional partition dimensions")
+    alias: Optional[str] = Field(default=None, description="Output alias for cumulative metric")
+
+    @model_validator(mode="after")
+    def validate_cumulative_column(self) -> "CumulativeSpec":
+        if self.function in (CumulativeFunction.SUM, CumulativeFunction.AVG) and not self.column:
+            raise ValueError(f"Cumulative function '{self.function.value}' requires a target 'column'.")
+        return self
+
+
+class OutlierSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    column: str = Field(..., description="Target numeric column to analyze for anomalies")
+    threshold: float = Field(default=3.0, ge=1.0, le=10.0, description="Z-score sigma threshold (1.0 to 10.0)")
+    partition_by: list[str] = Field(default_factory=list, description="Optional partition dimensions")
+    filter_outliers_only: bool = Field(default=True, description="If True, filters output rows to only outliers (abs(z_score) >= threshold)")
+    alias: Optional[str] = Field(default=None, description="Base alias prefix for outlier columns")
+
+
+class QuantileSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    column: str = Field(..., description="Numeric column used to calculate quantiles")
+    num_quantiles: int = Field(default=4, ge=2, le=100, description="Number of quantile buckets (2 to 100)")
+    order_descending: bool = Field(default=False, description="Whether higher values get bucket 1 (True) or bucket N (False)")
+    partition_by: list[str] = Field(default_factory=list, description="Optional partition dimensions")
+    alias: Optional[str] = Field(default=None, description="Output alias for quantile bucket number")
+
+
 class AnalysisPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -227,6 +291,20 @@ class AnalysisPlan(BaseModel):
     period_comparison: Optional[PeriodComparison] = Field(
         default=None, description="Deterministic period-over-period comparison"
     )
+    # Phase 7 Extensions
+    rolling_windows: list[RollingWindowSpec] = Field(
+        default_factory=list, description="Rolling window aggregations"
+    )
+    cumulative_metrics: list[CumulativeSpec] = Field(
+        default_factory=list, description="Running cumulative totals/averages/counts"
+    )
+    outlier_analysis: Optional[OutlierSpec] = Field(
+        default=None, description="Z-score anomaly & outlier detection"
+    )
+    quantiles: list[QuantileSpec] = Field(
+        default_factory=list, description="Quantile segmentation (NTILE)"
+    )
+
     order_by: list[OrderByClause] = Field(default_factory=list, description="Sort order clauses")
     limit: int = Field(default=50, ge=1, le=500, description="Max rows to return (clamped 1-500)")
     requires_chart: bool = Field(default=False, description="Whether visualization is requested")

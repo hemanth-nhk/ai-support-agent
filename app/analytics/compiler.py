@@ -19,6 +19,11 @@ from app.analytics.schemas import (
     CorrelationClause,
     PeriodComparison,
     PeriodComparisonMode,
+    WindowFunction,
+    RollingWindowSpec,
+    CumulativeFunction,
+    CumulativeSpec,
+    QuantileSpec,
 )
 
 
@@ -398,13 +403,97 @@ def compile_plan(plan: AnalysisPlan, metadata: DatasetMetadata) -> CompiledQuery
         )
         return CompiledQuery(sql=sql, parameters=parameters)
 
+    # 3.4 Validate and Compile Rolling Windows
+    for rw in plan.rolling_windows:
+        if rw.column not in col_map:
+            raise ColumnNotFoundError(f"Rolling window column '{rw.column}' does not exist in dataset.")
+        if col_types[rw.column] != "numeric":
+            raise TypeMismatchError(
+                f"Rolling window function '{rw.function.value}' requires numeric column, got '{rw.column}' (dtype: {col_map[rw.column].dtype})."
+            )
+        if rw.order_by not in col_map:
+            raise ColumnNotFoundError(f"Rolling window order_by column '{rw.order_by}' does not exist in dataset.")
+        for p in rw.partition_by:
+            if p not in col_map:
+                raise ColumnNotFoundError(f"Rolling window partition column '{p}' does not exist in dataset.")
+
+        alias = rw.alias or f"rolling_{rw.function.value}_{rw.column}"
+        alias_ident = escape_identifier(alias)
+        available_sort_targets.add(alias)
+        col_ident = escape_identifier(rw.column)
+        order_ident = escape_identifier(rw.order_by)
+        part_sql = f"PARTITION BY {', '.join(escape_identifier(p) for p in rw.partition_by)} " if rw.partition_by else ""
+        func_sql = rw.function.value.upper()
+        preceding_val = int(rw.preceding)
+        select_items.append(
+            f"{func_sql}({col_ident}) OVER ({part_sql}ORDER BY {order_ident} ASC ROWS BETWEEN {preceding_val} PRECEDING AND CURRENT ROW) AS {alias_ident}"
+        )
+
+    # 3.5 Validate and Compile Cumulative Metrics
+    for cm in plan.cumulative_metrics:
+        if cm.column:
+            if cm.column not in col_map:
+                raise ColumnNotFoundError(f"Cumulative metric column '{cm.column}' does not exist in dataset.")
+            if cm.function in (CumulativeFunction.SUM, CumulativeFunction.AVG) and col_types[cm.column] != "numeric":
+                raise TypeMismatchError(
+                    f"Cumulative function '{cm.function.value}' requires numeric column, got '{cm.column}' (dtype: {col_map[cm.column].dtype})."
+                )
+            col_target_sql = escape_identifier(cm.column)
+        else:
+            col_target_sql = "*"
+
+        if cm.order_by not in col_map:
+            raise ColumnNotFoundError(f"Cumulative metric order_by column '{cm.order_by}' does not exist in dataset.")
+        for p in cm.partition_by:
+            if p not in col_map:
+                raise ColumnNotFoundError(f"Cumulative metric partition column '{p}' does not exist in dataset.")
+
+        alias = cm.alias or f"cumulative_{cm.function.value}_{cm.column if cm.column else 'rows'}"
+        alias_ident = escape_identifier(alias)
+        available_sort_targets.add(alias)
+        order_ident = escape_identifier(cm.order_by)
+        part_sql = f"PARTITION BY {', '.join(escape_identifier(p) for p in cm.partition_by)} " if cm.partition_by else ""
+        func_sql = cm.function.value.upper()
+        select_items.append(
+            f"{func_sql}({col_target_sql}) OVER ({part_sql}ORDER BY {order_ident} ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {alias_ident}"
+        )
+
+    # 3.6 Validate and Compile Quantiles (NTILE)
+    for q in plan.quantiles:
+        if q.column not in col_map:
+            raise ColumnNotFoundError(f"Quantile column '{q.column}' does not exist in dataset.")
+        if col_types[q.column] != "numeric":
+            raise TypeMismatchError(
+                f"Quantile segmentation requires numeric column, got '{q.column}' (dtype: {col_map[q.column].dtype})."
+            )
+        for p in q.partition_by:
+            if p not in col_map:
+                raise ColumnNotFoundError(f"Quantile partition column '{p}' does not exist in dataset.")
+
+        alias = q.alias or f"quantile_{q.num_quantiles}_{q.column}"
+        alias_ident = escape_identifier(alias)
+        available_sort_targets.add(alias)
+        col_ident = escape_identifier(q.column)
+        part_sql = f"PARTITION BY {', '.join(escape_identifier(p) for p in q.partition_by)} " if q.partition_by else ""
+        dir_sql = "DESC" if q.order_descending else "ASC"
+        num_buckets = int(q.num_quantiles)
+        select_items.append(
+            f"NTILE({num_buckets}) OVER ({part_sql}ORDER BY {col_ident} {dir_sql}) AS {alias_ident}"
+        )
+
     # Projection Fallback: If no group_by and no aggregations, select all columns safely
+    has_window_funcs = bool(plan.rolling_windows or plan.cumulative_metrics or plan.quantiles)
     if not select_items:
         select_sql = "SELECT *"
         for c in col_map:
             available_sort_targets.add(c)
+    elif has_window_funcs and not plan.group_by and not plan.aggregations and not plan.derived_metrics:
+        # Row-level window projection includes source table columns
+        for c in col_map:
+            available_sort_targets.add(c)
+        select_sql = f"SELECT *, {', '.join(select_items)}"
     else:
-        distinct_kw = "DISTINCT " if (plan.group_by and not plan.aggregations and not plan.derived_metrics and not plan.correlations) else ""
+        distinct_kw = "DISTINCT " if (plan.group_by and not plan.aggregations and not plan.derived_metrics and not plan.correlations and not has_window_funcs) else ""
         select_sql = f"SELECT {distinct_kw}{', '.join(select_items)}"
 
     # 4. Construct FROM and WHERE

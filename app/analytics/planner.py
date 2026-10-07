@@ -135,18 +135,21 @@ User Question: "{question}"
                 if isinstance(f, dict) and str(f.get("value")).lower() != str(f.get("column")).lower()
             ]
 
-        # Fix aggregation if LLM put a string column in sum/avg
+        # Fix aggregation if LLM put a string column in sum/avg/min/max or used uppercase function
         if "aggregations" in parsed_json and isinstance(parsed_json["aggregations"], list):
             for agg in parsed_json["aggregations"]:
-                if isinstance(agg, dict) and str(agg.get("column")).lower() in str_col_names and agg.get("function") in ("sum", "avg"):
-                    # Find candidate numeric metric
-                    matching_metric = resolved_metric
-                    if not matching_metric:
-                        for nc_low, nc in num_col_names.items():
-                            if nc_low in question.lower() or nc_low in str(agg.get("alias", "")).lower():
-                                matching_metric = nc
-                                break
-                    agg["column"] = matching_metric or (list(num_col_names.values())[0] if num_col_names else None)
+                if isinstance(agg, dict):
+                    fn = str(agg.get("function", "")).lower()
+                    agg["function"] = fn
+                    col_str = str(agg.get("column", "")).lower()
+                    if col_str in str_col_names and fn in ("sum", "avg", "min", "max"):
+                        matching_metric = resolved_metric
+                        if not matching_metric:
+                            for nc_low, nc in num_col_names.items():
+                                if nc_low in question.lower() or nc_low in str(agg.get("alias", "")).lower():
+                                    matching_metric = nc
+                                    break
+                        agg["column"] = matching_metric or (list(num_col_names.values())[0] if num_col_names else None)
 
         # Server-Authoritative Override: Force dataset_id to match server's verified dataset
         parsed_json["dataset_id"] = metadata.dataset_id
@@ -179,7 +182,27 @@ User Question: "{question}"
         for ob in plan.order_by:
             ob.descending = True
 
-    # 4. Deterministic chart intent and explicit chart type detection
+    # 4. If order_by targets a metric not in aggregations (or user clarified resolved_metric), ensure aggregation exists
+    target_metric_name = (plan.order_by[0].target if plan.order_by else None) or resolved_metric
+    if target_metric_name and target_metric_name.lower() in num_col_names and plan.group_by:
+        canonical_metric = num_col_names[target_metric_name.lower()]
+        is_already_agg = any(
+            (agg.column and agg.column.lower() == canonical_metric.lower()) or (agg.alias and agg.alias.lower() == target_metric_name.lower())
+            for agg in plan.aggregations
+        )
+        if not is_already_agg:
+            alias_to_use = target_metric_name if not any(agg.alias == target_metric_name for agg in plan.aggregations) else f"total_{canonical_metric}"
+            plan.aggregations = [
+                AggregationClause(
+                    column=canonical_metric,
+                    function=AggregationFunction.SUM,
+                    alias=alias_to_use,
+                )
+            ]
+            if plan.order_by:
+                plan.order_by[0].target = alias_to_use
+
+    # 5. Deterministic chart intent and explicit chart type detection
     q_low = question.lower()
     chart_keywords = ("chart", "plot", "graph", "visualize", "visualization", "histogram", "scatter")
     if any(w in q_low for w in chart_keywords):

@@ -69,6 +69,58 @@
   const attachmentMeta = document.getElementById('attachmentMeta');
   const removeAttachmentBtn = document.getElementById('removeAttachmentBtn');
 
+  // Dataset Attachment Elements (CSV, XLSX, JSON)
+  const attachDatasetBtn = document.getElementById('attachDatasetBtn');
+  const datasetFileInput = document.getElementById('datasetFileInput');
+  const datasetChipBar = document.getElementById('datasetChipBar');
+  const datasetChip = document.getElementById('datasetChip');
+  const datasetFilename = document.getElementById('datasetFilename');
+  const datasetMeta = document.getElementById('datasetMeta');
+  const removeDatasetBtn = document.getElementById('removeDatasetBtn');
+
+  // Dataset Workspace Elements
+  const chatMain = document.getElementById('chatMain');
+  const datasetWorkspaceView = document.getElementById('datasetWorkspaceView');
+  const navDatasetsBtn = document.getElementById('navDatasetsBtn');
+  const workspaceActiveDatasetLabel = document.getElementById('workspaceActiveDatasetLabel');
+  const workspaceUploadFileInput = document.getElementById('workspaceUploadFileInput');
+  const workspaceUploadBtn = document.getElementById('workspaceUploadBtn');
+  const workspaceUploadTriggerBtn = document.getElementById('workspaceUploadTriggerBtn');
+  const workspaceSwitchBtn = document.getElementById('workspaceSwitchBtn');
+  const workspaceEmptyState = document.getElementById('workspaceEmptyState');
+  const workspaceContentCard = document.getElementById('workspaceContentCard');
+  const profileFormatTag = document.getElementById('profileFormatTag');
+  const profileRowsVal = document.getElementById('profileRowsVal');
+  const profileColsVal = document.getElementById('profileColsVal');
+  const profileMissingVal = document.getElementById('profileMissingVal');
+  const profileDupsVal = document.getElementById('profileDupsVal');
+  const workspaceColumnsTbody = document.getElementById('workspaceColumnsTbody');
+  const workspaceQueryInput = document.getElementById('workspaceQueryInput');
+  const workspaceAnalyzeBtn = document.getElementById('workspaceAnalyzeBtn');
+  const analyzeBtnText = document.getElementById('analyzeBtnText');
+  const analyzeBtnSpinner = document.getElementById('analyzeBtnSpinner');
+  const workspaceResultsCard = document.getElementById('workspaceResultsCard');
+  const workspaceFindingText = document.getElementById('workspaceFindingText');
+  const workspaceResultTableBox = document.getElementById('workspaceResultTableBox');
+  const workspaceTableCountTag = document.getElementById('workspaceTableCountTag');
+  const workspaceResultThead = document.getElementById('workspaceResultThead');
+  const workspaceResultTbody = document.getElementById('workspaceResultTbody');
+  const workspaceChartCard = document.getElementById('workspaceChartCard');
+  const workspaceChartTitle = document.getElementById('workspaceChartTitle');
+  const workspaceChartImg = document.getElementById('workspaceChartImg');
+  const workspaceChartExpandBtn = document.getElementById('workspaceChartExpandBtn');
+  const workspaceChartDownloadLink = document.getElementById('workspaceChartDownloadLink');
+
+  // Chart Modal Elements
+  const chartExpandModal = document.getElementById('chartExpandModal');
+  const modalChartTitle = document.getElementById('modalChartTitle');
+  const modalChartImg = document.getElementById('modalChartImg');
+  const modalChartDownloadLink = document.getElementById('modalChartDownloadLink');
+  const closeChartModalBtn = document.getElementById('closeChartModalBtn');
+  const closeChartModalBottomBtn = document.getElementById('closeChartModalBottomBtn');
+
+  let activeDataset = null;
+
   // Delete Confirmation Modal Elements
   const deleteConfirmModal = document.getElementById('deleteConfirmModal');
   const cancelDeleteBtn = document.getElementById('cancelDeleteBtn');
@@ -170,6 +222,7 @@
     renderThreadMessages(thread);
     renderSidebarThreads();
     updateAttachmentUI(thread.attachment || null);
+    updateDatasetAttachmentUI(thread.dataset || null);
     messageInput.focus();
   }
 
@@ -473,6 +526,308 @@
   }
 
   // ==========================================================================
+  // Dataset Management & Workspace (CSV, XLSX, JSON) - Phase 5
+  // ==========================================================================
+  function updateDatasetAttachmentUI(dataset, isUploading = false, uploadingName = '') {
+    if (!datasetChipBar) return;
+
+    if (isUploading) {
+      datasetChipBar.style.display = 'flex';
+      if (datasetChip) datasetChip.className = 'attachment-chip dataset-chip uploading';
+      if (datasetFilename) datasetFilename.textContent = uploadingName;
+      if (datasetMeta) datasetMeta.textContent = 'Profiling dataset...';
+      if (removeDatasetBtn) removeDatasetBtn.disabled = true;
+      if (attachDatasetBtn) attachDatasetBtn.disabled = true;
+      return;
+    }
+
+    if (attachDatasetBtn) attachDatasetBtn.disabled = false;
+
+    if (dataset && dataset.dataset_id) {
+      datasetChipBar.style.display = 'flex';
+      if (datasetChip) datasetChip.className = 'attachment-chip dataset-chip';
+      if (datasetFilename) {
+        datasetFilename.textContent = dataset.filename || 'Dataset';
+        datasetFilename.title = dataset.filename || 'Dataset';
+      }
+      if (datasetMeta) {
+        const rows = dataset.row_count || 0;
+        const cols = dataset.column_count || 0;
+        datasetMeta.textContent = `${rows.toLocaleString()} rows • ${cols} cols`;
+      }
+      if (removeDatasetBtn) removeDatasetBtn.disabled = false;
+    } else {
+      datasetChipBar.style.display = 'none';
+      if (datasetFilename) datasetFilename.textContent = '';
+      if (datasetMeta) datasetMeta.textContent = '';
+    }
+  }
+
+  async function handleDatasetUpload(file, isWorkspace = false) {
+    if (!file) return;
+
+    const allowedExts = ['.csv', '.xlsx', '.json'];
+    const lowerName = file.name.toLowerCase();
+    const isAllowed = allowedExts.some((ext) => lowerName.endsWith(ext));
+    if (!isAllowed) {
+      showToast('Unsupported dataset type. Please upload CSV, XLSX, or JSON.');
+      return;
+    }
+
+    if (file.size > 50 * 1024 * 1024) {
+      showToast('File exceeds maximum allowed dataset size of 50MB.');
+      return;
+    }
+
+    if (file.size === 0) {
+      showToast('Cannot upload an empty dataset file.');
+      return;
+    }
+
+    let thread = getActiveThread();
+    if (!thread) {
+      thread = createNewThread();
+    }
+
+    if (isWorkspace) {
+      if (workspaceActiveDatasetLabel) workspaceActiveDatasetLabel.textContent = `Profiling ${file.name}...`;
+      if (workspaceUploadBtn) workspaceUploadBtn.disabled = true;
+    } else {
+      updateDatasetAttachmentUI(null, true, file.name);
+    }
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('session_id', currentSessionId);
+
+      const res = await fetch('/datasets/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        const msg = errData.detail || `Dataset upload failed (${res.status})`;
+        showToast(msg);
+        if (isWorkspace) {
+          if (activeDataset) renderWorkspaceDataset(activeDataset);
+          else showWorkspaceEmpty();
+        } else {
+          updateDatasetAttachmentUI(thread ? thread.dataset : null);
+        }
+        return;
+      }
+
+      const data = await res.json();
+      activeDataset = data;
+
+      thread.dataset = {
+        dataset_id: data.dataset_id,
+        filename: data.filename,
+        row_count: data.row_count,
+        column_count: data.column_count,
+      };
+      thread.updatedAt = Date.now();
+      saveThreadsToStorage();
+
+      updateDatasetAttachmentUI(thread.dataset);
+      renderWorkspaceDataset(data);
+      showToast(`Uploaded ${data.filename} (${data.row_count.toLocaleString()} rows, ${data.column_count} columns)`);
+    } catch (err) {
+      console.error('Dataset upload error:', err);
+      showToast('Network error uploading dataset.');
+      if (isWorkspace) {
+        if (activeDataset) renderWorkspaceDataset(activeDataset);
+        else showWorkspaceEmpty();
+      } else {
+        updateDatasetAttachmentUI(thread ? thread.dataset : null);
+      }
+    } finally {
+      if (workspaceUploadBtn) workspaceUploadBtn.disabled = false;
+    }
+  }
+
+  function handleRemoveDataset() {
+    const thread = getActiveThread();
+    if (thread) {
+      thread.dataset = null;
+      thread.updatedAt = Date.now();
+      saveThreadsToStorage();
+    }
+    updateDatasetAttachmentUI(null);
+    showToast('Dataset detached from conversation.');
+  }
+
+  function showWorkspaceEmpty() {
+    if (workspaceEmptyState) workspaceEmptyState.style.display = 'flex';
+    if (workspaceContentCard) workspaceContentCard.style.display = 'none';
+    if (workspaceSwitchBtn) workspaceSwitchBtn.style.display = 'none';
+    if (workspaceActiveDatasetLabel) workspaceActiveDatasetLabel.textContent = 'No dataset selected';
+  }
+
+  function renderWorkspaceDataset(data) {
+    if (!data) return;
+    activeDataset = data;
+
+    if (workspaceActiveDatasetLabel) {
+      workspaceActiveDatasetLabel.textContent = `${data.filename} (${data.dataset_id.slice(0, 8)}...)`;
+    }
+    if (workspaceEmptyState) workspaceEmptyState.style.display = 'none';
+    if (workspaceContentCard) workspaceContentCard.style.display = 'flex';
+    if (workspaceSwitchBtn) workspaceSwitchBtn.style.display = 'inline-flex';
+
+    if (profileFormatTag) profileFormatTag.textContent = (data.format || 'csv').toUpperCase();
+    if (profileRowsVal) profileRowsVal.textContent = (data.row_count || 0).toLocaleString();
+    if (profileColsVal) profileColsVal.textContent = (data.column_count || 0).toLocaleString();
+
+    const prof = data.profile || {};
+    if (profileMissingVal) profileMissingVal.textContent = (prof.missing_cells || 0).toLocaleString();
+    if (profileDupsVal) profileDupsVal.textContent = (prof.duplicate_rows || 0).toLocaleString();
+
+    if (workspaceColumnsTbody && prof.columns) {
+      workspaceColumnsTbody.innerHTML = '';
+      prof.columns.forEach((col) => {
+        const tr = document.createElement('tr');
+        const missingPct = ((col.missing_percentage || 0) * 100).toFixed(1);
+        tr.innerHTML = `
+          <td><strong>${col.name}</strong></td>
+          <td><span class="profile-format-tag">${col.dtype}</span></td>
+          <td><code>${col.dtype}</code></td>
+          <td>${col.missing_count || 0} (${missingPct}%)</td>
+          <td>${(col.unique_count || 0).toLocaleString()}</td>
+        `;
+        workspaceColumnsTbody.appendChild(tr);
+      });
+    }
+  }
+
+  async function runWorkspaceAnalysis(queryText) {
+    const query = (queryText || (workspaceQueryInput ? workspaceQueryInput.value : '')).trim();
+    if (!query) {
+      showToast('Please enter an analytical question.');
+      return;
+    }
+    if (!activeDataset) {
+      showToast('No active dataset uploaded. Please upload a dataset first.');
+      return;
+    }
+
+    if (analyzeBtnText) analyzeBtnText.textContent = 'Analyzing...';
+    if (analyzeBtnSpinner) analyzeBtnSpinner.style.display = 'inline-block';
+    if (workspaceAnalyzeBtn) workspaceAnalyzeBtn.disabled = true;
+
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      const apiKey = getApiKey();
+      if (apiKey && apiKey.trim().length > 0) {
+        headers['X-API-Key'] = apiKey.trim();
+      }
+
+      const payload = {
+        message: query,
+        session_id: currentSessionId,
+        dataset_id: activeDataset.dataset_id,
+      };
+
+      const res = await fetch('/chat', {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.detail || `Analysis request failed (${res.status})`);
+        return;
+      }
+
+      // Render Analytical Findings
+      if (workspaceResultsCard) workspaceResultsCard.style.display = 'block';
+      if (workspaceFindingText) workspaceFindingText.textContent = data.response;
+
+      // Render Result Table
+      if (data.table && data.table.columns && data.table.rows && data.table.rows.length > 0) {
+        if (workspaceResultTableBox) workspaceResultTableBox.style.display = 'block';
+        if (workspaceTableCountTag) {
+          workspaceTableCountTag.textContent = `Showing ${data.table.rows.length} of ${data.table.row_count} rows`;
+        }
+        if (workspaceResultThead) {
+          workspaceResultThead.innerHTML = `<tr>${data.table.columns.map((c) => `<th>${c}</th>`).join('')}</tr>`;
+        }
+        if (workspaceResultTbody) {
+          workspaceResultTbody.innerHTML = data.table.rows
+            .map((r) => `<tr>${r.map((val) => `<td>${val !== null && val !== undefined ? String(val) : ''}</td>`).join('')}</tr>`)
+            .join('');
+        }
+      } else {
+        if (workspaceResultTableBox) workspaceResultTableBox.style.display = 'none';
+      }
+
+      // Render Chart
+      if (data.chart && data.chart.url) {
+        if (workspaceChartCard) workspaceChartCard.style.display = 'block';
+        if (workspaceChartTitle) workspaceChartTitle.textContent = data.chart.title || 'Generated Chart';
+        if (workspaceChartImg) workspaceChartImg.src = data.chart.url;
+        if (workspaceChartDownloadLink) {
+          workspaceChartDownloadLink.href = data.chart.url;
+          workspaceChartDownloadLink.download = data.chart.filename || 'chart.png';
+        }
+      } else {
+        if (workspaceChartCard) workspaceChartCard.style.display = 'none';
+      }
+
+      if (workspaceResultsCard) {
+        workspaceResultsCard.scrollIntoView({ behavior: 'smooth' });
+      }
+    } catch (err) {
+      console.error('Workspace analysis error:', err);
+      showToast('Error executing dataset analysis.');
+    } finally {
+      if (analyzeBtnText) analyzeBtnText.textContent = 'Analyze';
+      if (analyzeBtnSpinner) analyzeBtnSpinner.style.display = 'none';
+      if (workspaceAnalyzeBtn) workspaceAnalyzeBtn.disabled = false;
+    }
+  }
+
+  function switchToWorkspaceView() {
+    if (chatMain) chatMain.style.display = 'none';
+    if (datasetWorkspaceView) datasetWorkspaceView.style.display = 'flex';
+    document.querySelectorAll('.nav-item').forEach((n) => n.classList.remove('active'));
+    if (navDatasetsBtn) navDatasetsBtn.classList.add('active');
+
+    if (activeDataset) {
+      renderWorkspaceDataset(activeDataset);
+    } else {
+      showWorkspaceEmpty();
+    }
+  }
+
+  function switchToChatView() {
+    if (datasetWorkspaceView) datasetWorkspaceView.style.display = 'none';
+    if (chatMain) chatMain.style.display = 'flex';
+    const chatNavItem = document.querySelector('.nav-item[data-action="chat"]');
+    if (chatNavItem) chatNavItem.classList.add('active');
+  }
+
+  function openChartModal(url, title = 'Chart View') {
+    if (!chartExpandModal) return;
+    if (modalChartTitle) modalChartTitle.textContent = title;
+    if (modalChartImg) modalChartImg.src = url;
+    if (modalChartDownloadLink) {
+      modalChartDownloadLink.href = url;
+      modalChartDownloadLink.download = 'chart.png';
+    }
+    chartExpandModal.style.display = 'flex';
+  }
+
+  function closeChartModal() {
+    if (!chartExpandModal) return;
+    chartExpandModal.style.display = 'none';
+    if (modalChartImg) modalChartImg.src = '';
+  }
+
+  // ==========================================================================
   // Chat Actions: Clear, Archive, Delete
   // ==========================================================================
   function clearCurrentChat() {
@@ -484,6 +839,7 @@
       thread.id = newSessionId;
       thread.messages = [];
       thread.attachment = null;
+      thread.dataset = null;
       thread.title = 'New Conversation';
       thread.updatedAt = Date.now();
       saveThreadsToStorage();
@@ -493,6 +849,7 @@
 
     switchToThread(newSessionId);
     updateAttachmentUI(null);
+    updateDatasetAttachmentUI(null);
     showToast('Chat cleared — fresh session started');
   }
 
@@ -752,6 +1109,64 @@
     const bubble = document.createElement('div');
     bubble.className = 'turn-bubble';
     bubble.textContent = data.response;
+
+    // Render Table if present (Phase 5)
+    if (data.table && data.table.columns && data.table.rows && data.table.rows.length > 0) {
+      const tableWrap = document.createElement('div');
+      tableWrap.className = 'table-scroll-wrap';
+      tableWrap.style.marginTop = '12px';
+      const tbl = document.createElement('table');
+      tbl.className = 'analysis-result-table';
+      tbl.innerHTML = `
+        <thead><tr>${data.table.columns.map((c) => `<th>${c}</th>`).join('')}</tr></thead>
+        <tbody>${data.table.rows.map((r) => `<tr>${r.map((v) => `<td>${v !== null && v !== undefined ? String(v) : ''}</td>`).join('')}</tr>`).join('')}</tbody>
+      `;
+      tableWrap.appendChild(tbl);
+      bubble.appendChild(tableWrap);
+    }
+
+    // Render Chart if present (Phase 4 / 5)
+    if (data.chart && data.chart.url) {
+      const chartCard = document.createElement('div');
+      chartCard.className = 'workspace-chart-card';
+      chartCard.style.marginTop = '12px';
+      chartCard.innerHTML = `
+        <div class="chart-header-row">
+          <div class="chart-title-wrap">
+            <span class="chart-title-icon">📊</span>
+            <span class="chart-title-text">${data.chart.title || 'Generated Chart'}</span>
+          </div>
+          <div class="chart-actions">
+            <button type="button" class="chart-action-btn expand-btn" title="Expand Fullscreen">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="15 3 21 3 21 9"></polyline>
+                <polyline points="9 21 3 21 3 15"></polyline>
+                <line x1="21" y1="3" x2="14" y2="10"></line>
+                <line x1="3" y1="21" x2="10" y2="14"></line>
+              </svg>
+              <span>Expand</span>
+            </button>
+            <a href="${data.chart.url}" download="${data.chart.filename || 'chart.png'}" class="chart-action-btn" title="Download PNG">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              <span>Download</span>
+            </a>
+          </div>
+        </div>
+        <div class="chart-image-wrap">
+          <img src="${data.chart.url}" alt="${data.chart.title || 'Chart'}" class="chart-img-fluid" />
+        </div>
+      `;
+      const expBtn = chartCard.querySelector('.expand-btn');
+      if (expBtn) {
+        expBtn.addEventListener('click', () => openChartModal(data.chart.url, data.chart.title));
+      }
+      bubble.appendChild(chartCard);
+    }
+
     content.appendChild(bubble);
 
     const time = document.createElement('div');
@@ -881,6 +1296,9 @@
 
       if (thread && thread.attachment && thread.attachment.document_id) {
         payload.document_id = thread.attachment.document_id;
+      }
+      if (thread && thread.dataset && thread.dataset.dataset_id) {
+        payload.dataset_id = thread.dataset.dataset_id;
       }
 
       const res = await fetch('/chat', {
@@ -1023,6 +1441,13 @@
         item.classList.add('active');
 
         const action = item.getAttribute('data-action');
+        if (action === 'datasets') {
+          switchToWorkspaceView();
+          return;
+        } else {
+          switchToChatView();
+        }
+
         if (action && categoryTemplates[action]) {
           messageInput.value = categoryTemplates[action];
           messageInput.focus();
@@ -1039,7 +1464,7 @@
       });
     });
 
-    // Attachment upload & remove controls
+    // Document attachment upload & remove controls
     if (attachDocBtn && documentFileInput) {
       attachDocBtn.addEventListener('click', () => {
         documentFileInput.click();
@@ -1054,6 +1479,73 @@
     if (removeAttachmentBtn) {
       removeAttachmentBtn.addEventListener('click', handleRemoveAttachment);
     }
+
+    // Dataset attachment in chat controls
+    if (attachDatasetBtn && datasetFileInput) {
+      attachDatasetBtn.addEventListener('click', () => {
+        datasetFileInput.click();
+      });
+      datasetFileInput.addEventListener('change', (e) => {
+        if (e.target.files && e.target.files[0]) {
+          handleDatasetUpload(e.target.files[0], false);
+          datasetFileInput.value = '';
+        }
+      });
+    }
+    if (removeDatasetBtn) {
+      removeDatasetBtn.addEventListener('click', handleRemoveDataset);
+    }
+
+    // Workspace upload triggers
+    const triggerWorkspaceUpload = () => {
+      if (workspaceUploadFileInput) workspaceUploadFileInput.click();
+    };
+    if (workspaceUploadBtn) workspaceUploadBtn.addEventListener('click', triggerWorkspaceUpload);
+    if (workspaceUploadTriggerBtn) workspaceUploadTriggerBtn.addEventListener('click', triggerWorkspaceUpload);
+    if (workspaceSwitchBtn) workspaceSwitchBtn.addEventListener('click', triggerWorkspaceUpload);
+    if (workspaceUploadFileInput) {
+      workspaceUploadFileInput.addEventListener('change', (e) => {
+        if (e.target.files && e.target.files[0]) {
+          handleDatasetUpload(e.target.files[0], true);
+          workspaceUploadFileInput.value = '';
+        }
+      });
+    }
+
+    // Workspace Query & Sample chips
+    if (workspaceAnalyzeBtn) {
+      workspaceAnalyzeBtn.addEventListener('click', () => {
+        runWorkspaceAnalysis();
+      });
+    }
+    if (workspaceQueryInput) {
+      workspaceQueryInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          runWorkspaceAnalysis();
+        }
+      });
+    }
+    document.querySelectorAll('.query-chip').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        const q = chip.getAttribute('data-query');
+        if (q) {
+          if (workspaceQueryInput) workspaceQueryInput.value = q;
+          runWorkspaceAnalysis(q);
+        }
+      });
+    });
+
+    // Chart Fullscreen Modal
+    if (workspaceChartExpandBtn) {
+      workspaceChartExpandBtn.addEventListener('click', () => {
+        if (workspaceChartImg && workspaceChartImg.src) {
+          openChartModal(workspaceChartImg.src, workspaceChartTitle ? workspaceChartTitle.textContent : 'Chart View');
+        }
+      });
+    }
+    if (closeChartModalBtn) closeChartModalBtn.addEventListener('click', closeChartModal);
+    if (closeChartModalBottomBtn) closeChartModalBottomBtn.addEventListener('click', closeChartModal);
 
     // Profile Dropdown Toggle & Selection
     userProfileBtn.addEventListener('click', (e) => {
@@ -1099,6 +1591,7 @@
       if (e.key === 'Escape') {
         closeDeleteModal();
         closeProfileDropdown();
+        closeChartModal();
       }
     });
   }

@@ -120,6 +120,14 @@
             </svg>
             <span>Chat</span>
           </button>
+          <button class="nav-item" data-action="datasets" id="navDatasetsBtn">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="20" x2="18" y2="10"></line>
+              <line x1="12" y1="20" x2="12" y2="4"></line>
+              <line x1="6" y1="20" x2="6" y2="14"></line>
+            </svg>
+            <span>Datasets & Analytics</span>
+          </button>
           <button class="nav-item" data-action="order-tracking">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="1" y="3" width="15" height="13"></rect>
@@ -354,11 +362,40 @@
             </div>
           </div>
 
-          <!-- Hidden Native File Input -->
+          <!-- Dataset Chip Container -->
+          <div class="attachment-chip-bar" id="datasetChipBar" style="display: none;">
+            <div class="attachment-chip dataset-chip" id="datasetChip">
+              <div class="chip-file-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="20" x2="18" y2="10"></line>
+                  <line x1="12" y1="20" x2="12" y2="4"></line>
+                  <line x1="6" y1="20" x2="6" y2="14"></line>
+                </svg>
+              </div>
+              <div class="chip-content">
+                <span class="chip-filename" id="datasetFilename">dataset.csv</span>
+                <span class="chip-meta" id="datasetMeta">0 rows &bull; 0 cols</span>
+              </div>
+              <button type="button" class="chip-remove-btn" id="removeDatasetBtn" title="Remove attached dataset" aria-label="Remove attached dataset">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- Hidden Native File Inputs -->
           <input
             type="file"
             id="documentFileInput"
             accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+            style="display: none;"
+          />
+          <input
+            type="file"
+            id="datasetFileInput"
+            accept=".csv,.xlsx,.json,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/json"
             style="display: none;"
           />
 
@@ -380,7 +417,15 @@
                     <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
                   </svg>
                 </button>
-                <span class="toolbar-hint">Ask about orders, returns, products, or attached document...</span>
+                <!-- Functional Dataset Attachment Button -->
+                <button type="button" id="attachDatasetBtn" class="toolbar-btn" title="Attach dataset (CSV, XLSX, JSON)">
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="20" x2="18" y2="10"></line>
+                    <line x1="12" y1="20" x2="12" y2="4"></line>
+                    <line x1="6" y1="20" x2="6" y2="14"></line>
+                  </svg>
+                </button>
+                <span class="toolbar-hint">Ask about orders, returns, products, documents, or datasets...</span>
               </div>
 
               <div class="toolbar-right">
@@ -392,6 +437,212 @@
               </div>
             </div>
           </form>
+        </div>
+      </main>
+
+      <!-- 2B. Center Dataset Workspace View -->
+      <main class="dataset-workspace-main" id="datasetWorkspaceView" style="display: none;">
+        <div class="workspace-scroll-area">
+          <!-- Top Bar: Dataset Selector & Controls -->
+          <div class="workspace-header-card">
+            <div class="workspace-header-left">
+              <div class="workspace-icon-box">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="20" x2="18" y2="10"></line>
+                  <line x1="12" y1="20" x2="12" y2="4"></line>
+                  <line x1="6" y1="20" x2="6" y2="14"></line>
+                </svg>
+              </div>
+              <div class="workspace-title-info">
+                <h2 class="workspace-title">Dataset Analytics Workspace</h2>
+                <div class="workspace-active-badge">
+                  <span class="badge-dot"></span>
+                  <span id="workspaceActiveDatasetLabel">No dataset selected</span>
+                </div>
+              </div>
+            </div>
+            <div class="workspace-header-actions">
+              <input
+                type="file"
+                id="workspaceUploadFileInput"
+                accept=".csv,.xlsx,.json,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/json"
+                style="display: none;"
+              />
+              <button type="button" id="workspaceUploadBtn" class="nav-btn btn-pill-accent">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                <span>Upload Dataset</span>
+              </button>
+              <button type="button" id="workspaceSwitchBtn" class="nav-btn btn-pill-outline" style="display: none;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="1 4 1 10 7 10"></polyline>
+                  <polyline points="23 20 23 14 17 14"></polyline>
+                  <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"></path>
+                </svg>
+                <span>Switch Dataset</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Empty State: No Dataset Selected -->
+          <div class="workspace-empty-card" id="workspaceEmptyState">
+            <div class="empty-icon-wrap">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+                <polyline points="10 9 9 9 8 9"></polyline>
+              </svg>
+            </div>
+            <h3>No Dataset Uploaded</h3>
+            <p>Upload a CSV, XLSX, or JSON file to profile columns, compute metrics, and run deterministic visualizations.</p>
+            <button type="button" id="workspaceUploadTriggerBtn" class="btn-pill-accent">
+              Choose File to Analyze
+            </button>
+          </div>
+
+          <!-- Dataset Content Container -->
+          <div class="workspace-content-card" id="workspaceContentCard" style="display: none;">
+            <!-- 1. Profile Inspector -->
+            <div class="section-card">
+              <div class="section-card-header">
+                <h3 class="section-card-title">Dataset Profile</h3>
+                <span class="profile-format-tag" id="profileFormatTag">CSV</span>
+              </div>
+              <div class="profile-metrics-grid">
+                <div class="metric-box">
+                  <span class="metric-val" id="profileRowsVal">0</span>
+                  <span class="metric-lbl">Total Rows</span>
+                </div>
+                <div class="metric-box">
+                  <span class="metric-val" id="profileColsVal">0</span>
+                  <span class="metric-lbl">Columns</span>
+                </div>
+                <div class="metric-box">
+                  <span class="metric-val" id="profileMissingVal">0</span>
+                  <span class="metric-lbl">Missing Cells</span>
+                </div>
+                <div class="metric-box">
+                  <span class="metric-val" id="profileDupsVal">0</span>
+                  <span class="metric-lbl">Duplicate Rows</span>
+                </div>
+              </div>
+
+              <!-- Columns / Types Table -->
+              <div class="column-profiles-wrapper">
+                <div class="column-table-header">
+                  <span>Columns & Data Types</span>
+                </div>
+                <div class="table-scroll-wrap">
+                  <table class="columns-table" id="workspaceColumnsTable">
+                    <thead>
+                      <tr>
+                        <th>Column</th>
+                        <th>Type</th>
+                        <th>Dtype</th>
+                        <th>Missing</th>
+                        <th>Unique Values</th>
+                      </tr>
+                    </thead>
+                    <tbody id="workspaceColumnsTbody">
+                      <!-- Dynamically populated -->
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- 2. Query Console -->
+            <div class="section-card">
+              <div class="section-card-header">
+                <h3 class="section-card-title">Ask Your Dataset</h3>
+              </div>
+              <p class="section-desc">Ask questions in plain English. The agent compiles an AnalysisPlan and runs deterministic DuckDB queries with server-rendered charts.</p>
+
+              <div class="query-box-wrap">
+                <textarea
+                  id="workspaceQueryInput"
+                  class="workspace-query-input"
+                  placeholder="e.g. Which region generated the highest revenue? Or show a bar chart of sales by department..."
+                  rows="2"
+                ></textarea>
+                <div class="query-actions-row">
+                  <div class="quick-chips-wrap">
+                    <button type="button" class="query-chip" data-query="Which region had the highest total revenue?">Top by Revenue</button>
+                    <button type="button" class="query-chip" data-query="Show a bar chart of revenue by category">Revenue Bar Chart</button>
+                    <button type="button" class="query-chip" data-query="Show distribution of order amounts">Distribution Histogram</button>
+                  </div>
+                  <button type="button" id="workspaceAnalyzeBtn" class="btn-analyze">
+                    <span id="analyzeBtnText">Analyze</span>
+                    <span id="analyzeBtnSpinner" class="spinner-small" style="display: none;"></span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 3. Results Section (Finding + Result Table + Chart) -->
+            <div class="section-card results-section-card" id="workspaceResultsCard" style="display: none;">
+              <div class="section-card-header">
+                <h3 class="section-card-title">Analytical Findings</h3>
+                <span class="badge-intent-ok" id="workspaceResultBadge">DATASET_ANALYSIS</span>
+              </div>
+
+              <!-- Plain English Grounded Finding -->
+              <div class="finding-bubble" id="workspaceFindingText">
+                <!-- Verified finding -->
+              </div>
+
+              <!-- Result Table -->
+              <div class="result-table-box" id="workspaceResultTableBox" style="display: none;">
+                <div class="result-table-head-info">
+                  <span class="table-title">Query Result Data</span>
+                  <span class="table-count-tag" id="workspaceTableCountTag">0 rows</span>
+                </div>
+                <div class="table-scroll-wrap">
+                  <table class="analysis-result-table" id="workspaceResultTable">
+                    <thead id="workspaceResultThead"></thead>
+                    <tbody id="workspaceResultTbody"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Generated Chart Card -->
+              <div class="workspace-chart-card" id="workspaceChartCard" style="display: none;">
+                <div class="chart-header-row">
+                  <div class="chart-title-wrap">
+                    <span class="chart-title-icon">📊</span>
+                    <span class="chart-title-text" id="workspaceChartTitle">Chart</span>
+                  </div>
+                  <div class="chart-actions">
+                    <button type="button" id="workspaceChartExpandBtn" class="chart-action-btn" title="Expand Fullscreen">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="15 3 21 3 21 9"></polyline>
+                        <polyline points="9 21 3 21 3 15"></polyline>
+                        <line x1="21" y1="3" x2="14" y2="10"></line>
+                        <line x1="3" y1="21" x2="10" y2="14"></line>
+                      </svg>
+                      <span>Expand</span>
+                    </button>
+                    <a id="workspaceChartDownloadLink" class="chart-action-btn" download="chart.png" title="Download PNG">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="7 10 12 15 17 10"></polyline>
+                        <line x1="12" y1="15" x2="12" y2="3"></line>
+                      </svg>
+                      <span>Download</span>
+                    </a>
+                  </div>
+                </div>
+                <div class="chart-image-wrap">
+                  <img id="workspaceChartImg" src="" alt="Analytical Chart" class="chart-img-fluid" />
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </main>
 
@@ -455,6 +706,23 @@
       <div class="dialog-footer">
         <button id="cancelDeleteBtn" class="btn btn-secondary">Cancel</button>
         <button id="confirmDeleteBtn" class="btn btn-danger">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chart Fullscreen Modal -->
+  <div class="modal-backdrop" id="chartExpandModal" style="display: none;">
+    <div class="modal-card-dialog modal-chart-dialog">
+      <div class="dialog-header">
+        <h3 class="dialog-title" id="modalChartTitle">Chart View</h3>
+        <button type="button" id="closeChartModalBtn" class="modal-close-btn">&times;</button>
+      </div>
+      <div class="dialog-body chart-modal-body">
+        <img id="modalChartImg" src="" alt="Expanded Chart" class="chart-modal-img" />
+      </div>
+      <div class="dialog-footer">
+        <a id="modalChartDownloadLink" class="btn btn-secondary" download="chart.png">Download PNG</a>
+        <button id="closeChartModalBottomBtn" class="btn btn-primary">Close</button>
       </div>
     </div>
   </div>

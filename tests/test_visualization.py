@@ -295,6 +295,15 @@ def test_chat_response_contract_no_base64(monkeypatch):
     assert "base64_data_uri" not in chart_obj
     assert "data:image/png;base64" not in str(data)
 
+    # Verify table object structure & row count bounds
+    assert "table" in data
+    assert data["table"] is not None
+    table_obj = data["table"]
+    assert "columns" in table_obj
+    assert "rows" in table_obj
+    assert "row_count" in table_obj
+    assert len(table_obj["rows"]) <= 20
+
     # Verify chart URL works
     img_resp = client.get(chart_obj["url"])
     assert img_resp.status_code == 200

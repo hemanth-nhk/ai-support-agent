@@ -34,6 +34,7 @@ class ResponseEnvelope(BaseModel):
     retrieval_count: int
     status: str
     chart: Optional[dict] = None
+    table: Optional[dict] = None
 
     @field_validator("status")
     @classmethod
@@ -104,6 +105,7 @@ ERROR_ENVELOPE = {
     "retrieval_count": 0,
     "status": "error",
     "chart": None,
+    "table": None,
 }
 
 
@@ -131,6 +133,7 @@ def build_validated_envelope(agent_state: dict) -> dict:
             retrieval_count=agent_state.get("retrieval_count", 0),
             status=agent_state.get("status", "error"),
             chart=agent_state.get("chart_artifact"),
+            table=agent_state.get("analysis_table"),
         )
         return envelope.model_dump()
     except ValidationError:

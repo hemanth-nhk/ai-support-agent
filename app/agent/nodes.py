@@ -15,6 +15,7 @@ extraction into an OrderQueryFilter schema). The LLM is NEVER used to phrase
 the final database result.
 """
 import json
+import logging
 import re
 from app.agent.state import AgentState
 from app.agent.router import (
@@ -35,6 +36,8 @@ from app.tools.order_tool import get_order_status, get_customer_orders
 from app.rag.retriever import retrieve_faq
 from app.services import order_service, document_service
 from app.api.auth import check_api_key
+
+logger = logging.getLogger("app.agent.nodes")
 
 # --- Static templates used when the LLM must NOT be invoked ---
 TEMPLATE_ORDER_NOT_FOUND = "I couldn't find that order in our system. Please double-check the order ID."
@@ -677,6 +680,25 @@ State the verified findings in a concise, natural sentence. Do not alter, contra
             if is_explicit and err_reason:
                 final_answer += f" (Note: Unable to render requested {plan.chart_type} chart: {err_reason})"
 
+    # 8. Bounded Analysis Table for UI Consumption (Phase 5 Invariant)
+    analysis_table = None
+    if result and result.rows and result.columns:
+        col_names = [str(c) for c in result.columns[:30]]
+        table_rows = []
+        for r in result.rows[:20]:
+            row_vals = []
+            for c in col_names:
+                val = r.get(c)
+                if isinstance(val, str) and len(val) > 100:
+                    val = val[:97] + "..."
+                row_vals.append(val)
+            table_rows.append(row_vals)
+        analysis_table = {
+            "columns": col_names,
+            "rows": table_rows,
+            "row_count": result.row_count,
+        }
+
     return {
         "final_response": final_answer,
         "tool_used": "execute_analysis_plan",
@@ -691,6 +713,7 @@ State the verified findings in a concise, natural sentence. Do not alter, contra
         "analysis_plan": plan.model_dump(),
         "analysis_result": result.model_dump(),
         "chart_artifact": chart_artifact,
+        "analysis_table": analysis_table,
         "status": "ok",
         "awaiting_entity": None,
         "pending_analysis": None,

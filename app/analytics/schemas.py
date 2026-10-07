@@ -173,3 +173,9 @@ class ChartArtifact(BaseModel):
     width_px: int
     height_px: int
     url: str
+
+
+class AnalysisTable(BaseModel):
+    columns: list[str]
+    rows: list[list[Any]]
+    row_count: int

@@ -51,6 +51,7 @@ logger = logging.getLogger("app.analytics.visualizer")
 
 PNG_MAGIC_BYTES = b"\x89PNG\r\n\x1a\n"
 UUID_PATTERN = re.compile(r"^[0-9a-fA-F\-]{8,64}$")
+SESSION_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
 
 
 class ChartRenderError(Exception):
@@ -334,7 +335,7 @@ def render_chart(
     - Each render owns its Figure and Canvas instance.
     - Explicit cleanup via fig.clf().
     """
-    if not session_id or not UUID_PATTERN.match(session_id.strip()):
+    if not session_id or not SESSION_ID_PATTERN.match(session_id.strip()):
         raise ChartSecurityError(f"Invalid session_id format: '{session_id}'")
 
     clean_session_id = session_id.strip()
@@ -446,7 +447,7 @@ def resolve_chart_file(session_id: str, chart_id: str) -> Path:
     - file exists
     - .png extension only
     """
-    if not session_id or not UUID_PATTERN.match(session_id.strip()):
+    if not session_id or not SESSION_ID_PATTERN.match(session_id.strip()):
         raise ChartSecurityError("Invalid session_id format.")
     if not chart_id or not UUID_PATTERN.match(chart_id.strip()):
         raise ChartSecurityError("Invalid chart_id format.")

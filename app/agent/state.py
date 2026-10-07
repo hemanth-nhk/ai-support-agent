@@ -20,6 +20,7 @@ class AgentState(TypedDict, total=False):
     dataset_id: Optional[str]
     pending_analysis: Optional[dict]
     resolved_metric: Optional[str]
+    active_analysis_plan: Optional[dict]
     analysis_plan: Optional[dict]
     analysis_result: Optional[dict]
     ambiguity_details: Optional[dict]

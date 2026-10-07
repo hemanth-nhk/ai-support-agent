@@ -31,7 +31,7 @@ _DATASET_ID_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _DATASET_ANALYTIC_PATTERNS = re.compile(
-    r"\b(?:average|avg|mean|total|sum|highest|lowest|top|bottom|most|least|breakdown|distribution|compare|trends?|correlation|per)\b|"
+    r"\b(?:average|avg|mean|total|sum|highest|lowest|top|bottom|most|least|breakdown|distribution|compare|trends?|correlation|per|filter|filters|clear|reset|rolling|cumulative|instead|sort|plot|chart)\b|"
     r"\b(?:in|from|about)\s+(?:the|this|my|uploaded)\s+(?:dataset|data|table|csv|file)\b|"
     r"\b(?:dataset|data|table|csv)\b",
     re.IGNORECASE,
@@ -369,9 +369,11 @@ def classify_intent(
             ]
             has_col_signal = any(c in text for c in col_names)
             has_analytic_signal = bool(_DATASET_ANALYTIC_PATTERNS.search(text))
-            has_dataset_signal = has_col_signal or has_analytic_signal
+            has_active_plan = bool(previous_state and (previous_state.get("active_analysis_plan") or previous_state.get("analysis_plan")))
+            has_dataset_signal = has_col_signal or has_analytic_signal or has_active_plan
         else:
-            has_dataset_signal = bool(_DATASET_ANALYTIC_PATTERNS.search(text))
+            has_active_plan = bool(previous_state and (previous_state.get("active_analysis_plan") or previous_state.get("analysis_plan")))
+            has_dataset_signal = bool(_DATASET_ANALYTIC_PATTERNS.search(text)) or has_active_plan
 
         if has_dataset_signal:
             has_superlative = bool(_SUPERLATIVE_PATTERNS.search(text))

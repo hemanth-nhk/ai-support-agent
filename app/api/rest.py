@@ -58,6 +58,9 @@ def chat(request: ChatRequest, x_api_key: Optional[str] = Header(default=None)):
         raise HTTPException(status_code=400, detail=reason)
 
     previous_state = _sessions.get(request.session_id, {}) if request.session_id else None
+    if previous_state and request.dataset_id and request.dataset_id != previous_state.get("dataset_id"):
+        previous_state["active_analysis_plan"] = None
+        previous_state["analysis_plan"] = None
 
     try:
         agent_state = run_agent(

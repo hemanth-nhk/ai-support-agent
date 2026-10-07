@@ -564,37 +564,63 @@ def dataset_analysis_node(state: AgentState) -> dict:
             "awaiting_entity": None,
         }
 
-    # 2. Schema-aware LLM planning
+    # 2. Schema-aware LLM planning & incremental AST mutation
     from app.analytics.planner import generate_analysis_plan, format_deterministic_result
     from app.analytics.compiler import compile_plan
     from app.analytics.executor import execute_compiled_query
+    from app.analytics.schemas import AnalysisPlan
+
+    active_analysis_plan_dict = state.get("active_analysis_plan") or state.get("analysis_plan")
+    previous_plan = None
+    if active_analysis_plan_dict:
+        try:
+            candidate_prev = AnalysisPlan.model_validate(active_analysis_plan_dict)
+            if candidate_prev.dataset_id == metadata.dataset_id:
+                previous_plan = candidate_prev
+            else:
+                logger.info(
+                    "Purged active_analysis_plan: dataset_id mismatch (%s vs %s)",
+                    candidate_prev.dataset_id, metadata.dataset_id
+                )
+        except Exception as e:
+            logger.warning("Failed to validate active_analysis_plan from state: %s", e)
+            previous_plan = None
 
     try:
         plan = generate_analysis_plan(
             question=effective_question,
             metadata=metadata,
             resolved_metric=resolved_metric,
+            previous_plan=previous_plan,
         )
     except Exception as e:
-        return {
+        err_res = {
             "final_response": f"Failed to generate a valid analysis plan: {e}",
             "tool_used": "none",
             "retrieval_count": 0,
             "status": "error",
             "awaiting_entity": None,
         }
+        if previous_plan:
+            err_res["active_analysis_plan"] = previous_plan.model_dump()
+            err_res["analysis_plan"] = previous_plan.model_dump()
+        return err_res
 
     # 3. Deterministic compilation
     try:
         compiled = compile_plan(plan, metadata)
     except Exception as e:
-        return {
+        err_res = {
             "final_response": f"Analysis plan compilation error: {e}",
             "tool_used": "compile_plan",
             "retrieval_count": 0,
             "status": "error",
             "awaiting_entity": None,
         }
+        if previous_plan:
+            err_res["active_analysis_plan"] = previous_plan.model_dump()
+            err_res["analysis_plan"] = previous_plan.model_dump()
+        return err_res
 
     # 4. Safe DuckDB execution
     try:
@@ -605,13 +631,17 @@ def dataset_analysis_node(state: AgentState) -> dict:
             plan=plan,
         )
     except Exception as e:
-        return {
+        err_res = {
             "final_response": f"Dataset query execution failed: {e}",
             "tool_used": "execute_compiled_query",
             "retrieval_count": 0,
             "status": "error",
             "awaiting_entity": None,
         }
+        if previous_plan:
+            err_res["active_analysis_plan"] = previous_plan.model_dump()
+            err_res["analysis_plan"] = previous_plan.model_dump()
+        return err_res
 
     # 5. Deterministic Result Formatter (User Constraint 4)
     deterministic_summary = format_deterministic_result(result, effective_question)
@@ -710,6 +740,7 @@ State the verified findings in a concise, natural sentence. Do not alter, contra
             "rows": result.rows[:20],
             "execution_time_ms": result.execution_time_ms,
         },
+        "active_analysis_plan": plan.model_dump(),
         "analysis_plan": plan.model_dump(),
         "analysis_result": result.model_dump(),
         "chart_artifact": chart_artifact,

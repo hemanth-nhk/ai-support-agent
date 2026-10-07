@@ -25,6 +25,7 @@ from app.analytics.schemas import (
     CumulativeSpec,
     QuantileSpec,
     OutlierSpec,
+    PivotSpec,
 )
 
 
@@ -109,6 +110,160 @@ def validate_numeric_value(val: Any, col_name: str) -> Union[int, float]:
     )
 
 
+def _format_literal_sql(val: Any, col_dtype_cat: str) -> str:
+    """Formats a validated filter value safely as a SQL literal without parameter placeholders."""
+    if val is None:
+        return "NULL"
+    if col_dtype_cat == "numeric":
+        return str(val)
+    if col_dtype_cat == "boolean":
+        return "TRUE" if val else "FALSE"
+    s = str(val).replace("'", "''")
+    return f"'{s}'"
+
+
+def _compile_pivot_query(
+    plan: AnalysisPlan,
+    metadata: DatasetMetadata,
+    col_map: dict[str, ColumnProfile],
+    col_types: dict[str, str],
+) -> CompiledQuery:
+    """Compiles a PivotSpec cross-tab AST into deterministic DuckDB PIVOT SQL."""
+    pivot = plan.pivot
+    if pivot is None:
+        raise PlanValidationError("Missing pivot specification.")
+
+    if pivot.row_dimension not in col_map:
+        raise ColumnNotFoundError(f"Pivot row dimension '{pivot.row_dimension}' does not exist in dataset.")
+    if pivot.column_dimension not in col_map:
+        raise ColumnNotFoundError(f"Pivot column dimension '{pivot.column_dimension}' does not exist in dataset.")
+    if pivot.row_dimension.lower() == pivot.column_dimension.lower():
+        raise PlanValidationError("Pivot row dimension and column dimension cannot be the same column.")
+    if pivot.metric not in col_map:
+        raise ColumnNotFoundError(f"Pivot metric '{pivot.metric}' does not exist in dataset.")
+
+    metric_type = col_types[pivot.metric]
+    if pivot.aggregation != AggregationFunction.COUNT and metric_type != "numeric":
+        raise TypeMismatchError(
+            f"Pivot metric '{pivot.metric}' must be numeric for aggregation '{pivot.aggregation.value}', but is '{metric_type}'."
+        )
+
+    where_clauses: list[str] = []
+    for f in plan.filters:
+        if f.column not in col_map:
+            raise ColumnNotFoundError(f"Column '{f.column}' does not exist in dataset. Available columns: {sorted(col_map.keys())}.")
+
+        col_dtype_cat = col_types[f.column]
+        col_ident = escape_identifier(f.column)
+
+        if f.operator == FilterOperator.IS_NULL:
+            where_clauses.append(f"{col_ident} IS NULL")
+            continue
+        elif f.operator == FilterOperator.IS_NOT_NULL:
+            where_clauses.append(f"{col_ident} IS NOT NULL")
+            continue
+
+        if f.operator in (FilterOperator.CONTAINS, FilterOperator.STARTS_WITH):
+            if col_dtype_cat != "string":
+                raise TypeMismatchError(
+                    f"Operator '{f.operator.value}' is only valid on text/string columns, not '{col_dtype_cat}' column '{f.column}'."
+                )
+            if not isinstance(f.value, str):
+                raise TypeMismatchError(f"Operator '{f.operator.value}' requires a string value, got {type(f.value).__name__}.")
+            val_escaped = str(f.value).replace("'", "''")
+            if f.operator == FilterOperator.CONTAINS:
+                where_clauses.append(f"{col_ident} ILIKE '%{val_escaped}%'")
+            else:
+                where_clauses.append(f"{col_ident} ILIKE '{val_escaped}%'")
+            continue
+
+        if f.operator in (FilterOperator.IN, FilterOperator.NOT_IN):
+            if not isinstance(f.value, list) or len(f.value) == 0:
+                raise PlanValidationError(f"Operator '{f.operator.value}' requires a non-empty list of values.")
+            clean_vals = []
+            for item in f.value:
+                if col_dtype_cat == "numeric":
+                    clean_vals.append(_format_literal_sql(validate_numeric_value(item, f.column), col_dtype_cat))
+                elif col_dtype_cat == "datetime":
+                    clean_vals.append(_format_literal_sql(validate_date_value(item, f.column), col_dtype_cat))
+                else:
+                    clean_vals.append(_format_literal_sql(item, col_dtype_cat))
+            op_sql = "IN" if f.operator == FilterOperator.IN else "NOT IN"
+            where_clauses.append(f"{col_ident} {op_sql} ({', '.join(clean_vals)})")
+            continue
+
+        if f.operator == FilterOperator.BETWEEN:
+            if not isinstance(f.value, list) or len(f.value) != 2:
+                raise PlanValidationError("Operator 'between' requires a list of exactly two boundary values [low, high].")
+            if col_dtype_cat == "string":
+                raise TypeMismatchError(f"Operator 'between' is not supported on text column '{f.column}'.")
+            if col_dtype_cat == "numeric":
+                low = _format_literal_sql(validate_numeric_value(f.value[0], f.column), col_dtype_cat)
+                high = _format_literal_sql(validate_numeric_value(f.value[1], f.column), col_dtype_cat)
+            elif col_dtype_cat == "datetime":
+                low = _format_literal_sql(validate_date_value(f.value[0], f.column), col_dtype_cat)
+                high = _format_literal_sql(validate_date_value(f.value[1], f.column), col_dtype_cat)
+            else:
+                low = _format_literal_sql(f.value[0], col_dtype_cat)
+                high = _format_literal_sql(f.value[1], col_dtype_cat)
+            where_clauses.append(f"{col_ident} BETWEEN {low} AND {high}")
+            continue
+
+        op_map = {
+            FilterOperator.EQ: "=",
+            FilterOperator.NEQ: "!=",
+            FilterOperator.GT: ">",
+            FilterOperator.GTE: ">=",
+            FilterOperator.LT: "<",
+            FilterOperator.LTE: "<=",
+        }
+        op_sql = op_map[f.operator]
+
+        if f.operator in (FilterOperator.GT, FilterOperator.GTE, FilterOperator.LT, FilterOperator.LTE):
+            if col_dtype_cat == "string":
+                raise TypeMismatchError(f"Inequality operator '{f.operator.value}' is not supported on text column '{f.column}'.")
+
+        if col_dtype_cat == "numeric":
+            clean_val = _format_literal_sql(validate_numeric_value(f.value, f.column), col_dtype_cat)
+        elif col_dtype_cat == "datetime":
+            clean_val = _format_literal_sql(validate_date_value(f.value, f.column), col_dtype_cat)
+        elif col_dtype_cat == "boolean":
+            if not isinstance(f.value, bool):
+                raise TypeMismatchError(f"Boolean column '{f.column}' requires boolean value (True/False).")
+            clean_val = "TRUE" if f.value else "FALSE"
+        else:
+            clean_val = _format_literal_sql(str(f.value), col_dtype_cat)
+
+        where_clauses.append(f"{col_ident} {op_sql} {clean_val}")
+
+    row_dim_ident = escape_identifier(pivot.row_dimension)
+    col_dim_ident = escape_identifier(pivot.column_dimension)
+    metric_ident = escape_identifier(pivot.metric)
+    agg_func = pivot.aggregation.value.upper()
+
+    order_dir = "ASC"
+    if plan.order_by:
+        for o in plan.order_by:
+            if o.target.lower() == pivot.row_dimension.lower():
+                order_dir = "DESC" if o.descending else "ASC"
+                break
+
+    where_sql = f"\n    WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    clamped_max_rows = max(1, min(pivot.max_rows, 50))
+
+    pivot_sql = f"""PIVOT (
+    SELECT {row_dim_ident}, {col_dim_ident}, {metric_ident}
+    FROM source_table{where_sql}
+)
+ON {col_dim_ident}
+USING {agg_func}({metric_ident})
+GROUP BY {row_dim_ident}
+ORDER BY {row_dim_ident} {order_dir}
+LIMIT {clamped_max_rows}"""
+
+    return CompiledQuery(sql=pivot_sql.strip(), parameters=[])
+
+
 def compile_plan(plan: AnalysisPlan, metadata: DatasetMetadata) -> CompiledQuery:
     """
     Compiles an AnalysisPlan into parameterized DuckDB SQL targeting 'source_table'.
@@ -121,6 +276,10 @@ def compile_plan(plan: AnalysisPlan, metadata: DatasetMetadata) -> CompiledQuery
 
     col_map: dict[str, ColumnProfile] = {c.name: c for c in metadata.profile.columns}
     col_types: dict[str, str] = {c.name: classify_dtype(c.dtype, c.name) for c in metadata.profile.columns}
+
+    # Phase 9: Cross-tab / Pivot compilation branch
+    if plan.pivot is not None:
+        return _compile_pivot_query(plan, metadata, col_map, col_types)
 
     # 1. Validate Columns in Filters
     where_clauses: list[str] = []

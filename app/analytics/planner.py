@@ -37,6 +37,8 @@ from app.analytics.schemas import (
     GroupByDelta,
     MetricDelta,
     SortDelta,
+    PivotSpec,
+    PivotDelta,
 )
 from app.analytics.mutator import apply_plan_mutation, MutationError, describe_mutation
 from app.analytics.compiler import classify_dtype
@@ -394,6 +396,43 @@ def _fallback_heuristic_plan(
         target_metric = num_cols[0]
 
     date_cols = [c.name for c in metadata.profile.columns if classify_dtype(c.dtype, c.name) == "datetime"]
+
+    # Phase 9: Cross-tab / Pivot / Matrix / Heatmap fallback
+    pivot_keywords = ("cross-tab", "crosstab", "cross tab", "pivot", "matrix", "heatmap")
+    is_pivot_intent = any(k in lowered for k in pivot_keywords) or (
+        len(str_cols) >= 2 and any(k in lowered for k in ("by ", "across ", " and ")) and sum(1 for sc in str_cols if sc.lower() in lowered) >= 2
+    )
+    if is_pivot_intent and len(str_cols) >= 2:
+        dim_candidates = [sc for sc in str_cols if sc.lower() in lowered]
+        if len(dim_candidates) < 2:
+            dim_candidates = str_cols[:2]
+        row_dim = dim_candidates[0]
+        col_dim = dim_candidates[1]
+
+        m = target_metric or (num_cols[0] if num_cols else "id")
+        agg_fn = "sum"
+        if "avg" in lowered or "average" in lowered or "mean" in lowered:
+            agg_fn = "avg"
+        elif "count" in lowered or not num_cols:
+            agg_fn = "count"
+        elif "max" in lowered:
+            agg_fn = "max"
+        elif "min" in lowered:
+            agg_fn = "min"
+
+        is_heatmap = "heatmap" in lowered
+        return {
+            "dataset_id": metadata.dataset_id,
+            "pivot": {
+                "row_dimension": row_dim,
+                "column_dimension": col_dim,
+                "metric": m,
+                "aggregation": agg_fn,
+                "include_totals": True,
+            },
+            "requires_chart": is_heatmap,
+            "chart_type": "heatmap" if is_heatmap else None,
+        }
 
     # Period comparison fallback (growth %, MoM, YoY)
     if any(k in lowered for k in ("growth", "mom", "yoy", "month-over-month", "period")) and date_cols and (target_metric or num_cols):
@@ -767,6 +806,40 @@ def _fallback_heuristic_mutation(
             ),
         )
 
+    # Phase 9: TOGGLE_HEATMAP
+    if "heatmap" in q_low:
+        if any(w in q_low for w in ("hide", "remove", "disable", "no heatmap")):
+            return PlanMutation(mutation_type=PlanMutationType.TOGGLE_HEATMAP, requires_chart=False)
+        return PlanMutation(
+            mutation_type=PlanMutationType.TOGGLE_HEATMAP,
+            chart_type="heatmap",
+            requires_chart=True,
+        )
+
+    # Phase 9: CHANGE_PIVOT_COLUMNS
+    if any(k in q_low for k in ("pivot by", "cross-tab by", "switch columns to", "switch rows to", "change columns to", "change rows to")):
+        target_dims = [sc for sc in str_cols if sc.lower() in q_low]
+        prev_p = previous_plan.pivot
+        new_row = prev_p.row_dimension if prev_p else (str_cols[0] if str_cols else None)
+        new_col = prev_p.column_dimension if prev_p else (str_cols[1] if len(str_cols) > 1 else None)
+        if "switch columns to" in q_low and target_dims:
+            new_col = target_dims[0]
+        elif "switch rows to" in q_low and target_dims:
+            new_row = target_dims[0]
+        elif len(target_dims) >= 2:
+            new_row, new_col = target_dims[0], target_dims[1]
+        elif len(target_dims) == 1:
+            new_col = target_dims[0]
+
+        return PlanMutation(
+            mutation_type=PlanMutationType.CHANGE_PIVOT_COLUMNS,
+            pivot_delta=PivotDelta(
+                row_dimension=new_row,
+                column_dimension=new_col,
+                metric=prev_p.metric if prev_p else (num_cols[0] if num_cols else "id"),
+            ),
+        )
+
     # 4. TOGGLE_CHART / VISUALIZATION
     chart_keywords = ("chart", "plot", "graph", "visualize", "visualization")
     if any(k in q_low for k in chart_keywords):
@@ -867,15 +940,26 @@ def _fallback_heuristic_mutation(
                 target_col = sc
                 break
 
-        v_match = re.search(r"(?:filter\s+to|filter\s+by|only|where)\s+([A-Za-z0-9_\s-]+)", question, re.IGNORECASE)
-        if v_match:
-            raw_v = v_match.group(1).strip()
-            raw_v = re.sub(r"^(?:in|the|for|status|category|region|country)\s+", "", raw_v, flags=re.IGNORECASE).strip()
-            if raw_v:
-                filter_val = raw_v
+        # Check for quoted value first (e.g. 'North' or "Electronics")
+        quote_match = re.search(r"['\"]([^'\"]+)['\"]", question)
+        if quote_match:
+            filter_val = quote_match.group(1).strip()
+        else:
+            eq_match = re.search(r"(?:==|=|is)\s*([A-Za-z0-9_\s-]+)", question, re.IGNORECASE)
+            if eq_match:
+                filter_val = eq_match.group(1).strip()
+            else:
+                v_match = re.search(r"(?:filter\s+to|filter\s+by|only\s+in|only|where)\s+([A-Za-z0-9_\s-]+)", question, re.IGNORECASE)
+                if v_match:
+                    raw_v = v_match.group(1).strip()
+                    raw_v = re.sub(r"^(?:in|the|for|status|category|region|country)\s+", "", raw_v, flags=re.IGNORECASE).strip()
+                    if raw_v:
+                        filter_val = raw_v
 
         if not target_col:
-            if previous_plan.group_by:
+            if previous_plan.pivot:
+                target_col = previous_plan.pivot.row_dimension
+            elif previous_plan.group_by:
                 target_col = previous_plan.group_by[0].column
             elif str_cols:
                 target_col = str_cols[0]
@@ -969,6 +1053,35 @@ def format_deterministic_result(
             if prev_ob.target != curr_ob.target or prev_ob.descending != curr_ob.descending:
                 dir_label = "descending" if curr_ob.descending else "ascending"
                 mutation_prefix = f"Sorted by {curr_ob.target} ({dir_label}). "
+
+    # Phase 9: Cross-Tab / Pivot Table result
+    if result.pivot_table is not None:
+        pt = result.pivot_table
+        if not pt.rows or not pt.columns:
+            return f"{mutation_prefix}The cross-tabulation query completed, but no matching records were found."
+
+        max_val = None
+        max_cell = None
+        for r_idx, r_name in enumerate(pt.rows):
+            for c_idx, c_name in enumerate(pt.columns):
+                v = pt.values[r_idx][c_idx]
+                if v is not None and (max_val is None or v > max_val):
+                    max_val = v
+                    max_cell = (r_name, c_name)
+
+        total_part = f", with grand total {pt.grand_total:,.2f}" if pt.grand_total is not None else ""
+        if max_cell and max_val is not None:
+            val_formatted = f"{max_val:,.2f}" if isinstance(max_val, float) else f"{max_val}"
+            return (
+                f"{mutation_prefix}Cross-tabulation of {pt.aggregation} {pt.metric} across {len(pt.rows)} {pt.row_dimension} values "
+                f"and {len(pt.columns)} {pt.column_dimension} values. Leading cell observed in {max_cell[0]} × {max_cell[1]} "
+                f"({val_formatted}){total_part}."
+            )
+        else:
+            return (
+                f"{mutation_prefix}Cross-tabulation of {pt.aggregation} {pt.metric} across {len(pt.rows)} {pt.row_dimension} values "
+                f"and {len(pt.columns)} {pt.column_dimension} values{total_part}."
+            )
 
     if result.row_count == 0:
         if result.plan.outlier_analysis:

@@ -12,7 +12,7 @@ from typing import Any, Optional
 import duckdb
 import pandas as pd
 
-from app.analytics.schemas import AnalysisPlan, AnalysisResult
+from app.analytics.schemas import AnalysisPlan, AnalysisResult, PivotResult
 from app.analytics.compiler import CompiledQuery, compile_plan
 from app.analytics.dataset_service import get_dataset, get_dataset_file_path
 
@@ -135,6 +135,75 @@ def execute_compiled_query(
         rows.append(cleaned_record)
         current_bytes += record_bytes
 
+    # Build pivot table matrix if plan.pivot is specified
+    pivot_result: Optional[PivotResult] = None
+    if plan.pivot is not None:
+        p_spec = plan.pivot
+        max_cols = max(1, min(p_spec.max_columns, 30))
+
+        if len(df_result.columns) > 0:
+            row_dim_col = df_result.columns[0]
+            col_dim_names = [str(c) for c in df_result.columns[1: 1 + max_cols]]
+            row_names = [str(r) for r in df_result[row_dim_col].tolist()]
+
+            matrix_values: list[list[Optional[float]]] = []
+            for _, r in df_result.iterrows():
+                row_vals: list[Optional[float]] = []
+                for c in col_dim_names:
+                    v = r.get(c) if hasattr(r, "get") else r[c]
+                    if v is None or pd.isna(v):
+                        row_vals.append(None)
+                    else:
+                        try:
+                            row_vals.append(round(float(v), 4))
+                        except (ValueError, TypeError):
+                            row_vals.append(None)
+                matrix_values.append(row_vals)
+
+            row_totals: Optional[list[Optional[float]]] = None
+            col_totals: Optional[list[Optional[float]]] = None
+            grand_total: Optional[float] = None
+
+            if p_spec.include_totals:
+                row_totals = []
+                for r_vals in matrix_values:
+                    nums = [v for v in r_vals if v is not None]
+                    row_totals.append(round(sum(nums), 4) if nums else None)
+
+                col_totals = []
+                for j in range(len(col_dim_names)):
+                    nums = [matrix_values[i][j] for i in range(len(matrix_values)) if matrix_values[i][j] is not None]
+                    col_totals.append(round(sum(nums), 4) if nums else None)
+
+                all_nums = [v for r_vals in matrix_values for v in r_vals if v is not None]
+                grand_total = round(sum(all_nums), 4) if all_nums else 0.0
+
+            pivot_result = PivotResult(
+                row_dimension=p_spec.row_dimension,
+                column_dimension=p_spec.column_dimension,
+                metric=p_spec.metric,
+                aggregation=p_spec.aggregation.value,
+                rows=row_names,
+                columns=col_dim_names,
+                values=matrix_values,
+                row_totals=row_totals,
+                column_totals=col_totals,
+                grand_total=grand_total,
+            )
+        else:
+            pivot_result = PivotResult(
+                row_dimension=p_spec.row_dimension,
+                column_dimension=p_spec.column_dimension,
+                metric=p_spec.metric,
+                aggregation=p_spec.aggregation.value,
+                rows=[],
+                columns=[],
+                values=[],
+                row_totals=[] if p_spec.include_totals else None,
+                column_totals=[] if p_spec.include_totals else None,
+                grand_total=0.0 if p_spec.include_totals else None,
+            )
+
     return AnalysisResult(
         plan=plan,
         compiled_sql=query.sql,
@@ -143,6 +212,7 @@ def execute_compiled_query(
         truncated=truncated,
         columns=col_names,
         execution_time_ms=execution_time_ms,
+        pivot_table=pivot_result,
     )
 
 

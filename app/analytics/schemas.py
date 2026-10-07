@@ -304,13 +304,58 @@ class AnalysisPlan(BaseModel):
     quantiles: list[QuantileSpec] = Field(
         default_factory=list, description="Quantile segmentation (NTILE)"
     )
+    # Phase 9: Cross-Tab / Pivot Analysis
+    pivot: Optional["PivotSpec"] = Field(
+        default=None, description="Two-dimensional cross-tabulation / pivot matrix specification"
+    )
 
     order_by: list[OrderByClause] = Field(default_factory=list, description="Sort order clauses")
     limit: int = Field(default=50, ge=1, le=500, description="Max rows to return (clamped 1-500)")
     requires_chart: bool = Field(default=False, description="Whether visualization is requested")
-    chart_type: Optional[Literal["bar", "line", "scatter", "histogram"]] = Field(
+    chart_type: Optional[Literal["bar", "line", "scatter", "histogram", "heatmap"]] = Field(
         default=None, description="Suggested chart visualization type"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: Cross-Tab / Pivot Analysis & Heatmap Visualization
+# ---------------------------------------------------------------------------
+
+class PivotSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    row_dimension: str = Field(..., description="Categorical or discrete column for pivot table rows")
+    column_dimension: str = Field(..., description="Categorical or discrete column for pivot table columns")
+    metric: str = Field(..., description="Numeric column to aggregate across row and column dimensions")
+    aggregation: AggregationFunction = Field(
+        default=AggregationFunction.SUM,
+        description="Aggregation function (sum, avg, count, min, max)"
+    )
+    max_rows: int = Field(default=20, ge=1, le=50, description="Max distinct row dimension values (clamped 1-50)")
+    max_columns: int = Field(default=15, ge=1, le=30, description="Max distinct column dimension values (clamped 1-30)")
+    include_totals: bool = Field(default=True, description="Whether to compute marginal row/column totals")
+    alias: Optional[str] = Field(default=None, description="Optional matrix alias")
+
+    @model_validator(mode="after")
+    def validate_pivot_dimensions(self) -> "PivotSpec":
+        if self.row_dimension.lower() == self.column_dimension.lower():
+            raise ValueError("row_dimension and column_dimension must be distinct columns.")
+        return self
+
+
+class PivotResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    row_dimension: str
+    column_dimension: str
+    metric: str
+    aggregation: str
+    rows: list[str]
+    columns: list[str]
+    values: list[list[Optional[float]]]
+    row_totals: Optional[list[Optional[float]]] = None
+    column_totals: Optional[list[Optional[float]]] = None
+    grand_total: Optional[float] = None
 
 
 class AnalysisResult(BaseModel):
@@ -321,11 +366,12 @@ class AnalysisResult(BaseModel):
     truncated: bool = False
     columns: list[str]
     execution_time_ms: float
+    pivot_table: Optional[PivotResult] = None
 
 
 class ChartArtifact(BaseModel):
     chart_id: str
-    chart_type: Literal["bar", "line", "scatter", "histogram"]
+    chart_type: Literal["bar", "line", "scatter", "histogram", "heatmap"]
     filename: str
     title: str
     width_px: int
@@ -358,6 +404,9 @@ class PlanMutationType(str, Enum):
     ADD_ROLLING = "add_rolling"
     ADD_CUMULATIVE = "add_cumulative"
     TOGGLE_CHART = "toggle_chart"
+    # Phase 9
+    TOGGLE_HEATMAP = "toggle_heatmap"
+    CHANGE_PIVOT_COLUMNS = "change_pivot_columns"
 
 
 class FilterDelta(BaseModel):
@@ -439,6 +488,18 @@ class SortDelta(BaseModel):
         return OrderByClause(target=self.target, descending=self.descending)
 
 
+class PivotDelta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    row_dimension: Optional[str] = Field(default=None, description="New row dimension")
+    column_dimension: Optional[str] = Field(default=None, description="New column dimension")
+    metric: Optional[str] = Field(default=None, description="New metric column")
+    aggregation: Optional[AggregationFunction] = Field(default=None, description="New aggregation function")
+    max_rows: Optional[int] = Field(default=None, ge=1, le=50, description="Max rows clamp")
+    max_columns: Optional[int] = Field(default=None, ge=1, le=30, description="Max columns clamp")
+    include_totals: Optional[bool] = Field(default=None, description="Whether to include totals")
+
+
 class PlanMutation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -464,7 +525,10 @@ class PlanMutation(BaseModel):
     cumulative_delta: Optional[CumulativeSpec] = Field(
         default=None, description="Cumulative metric specification to add or update"
     )
-    chart_type: Optional[Literal["bar", "line", "scatter", "histogram"]] = Field(
+    pivot_delta: Optional[PivotDelta] = Field(
+        default=None, description="Pivot modification delta"
+    )
+    chart_type: Optional[Literal["bar", "line", "scatter", "histogram", "heatmap"]] = Field(
         default=None, description="Chart visualization type"
     )
     requires_chart: Optional[bool] = Field(

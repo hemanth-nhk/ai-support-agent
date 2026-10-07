@@ -693,7 +693,7 @@ State the verified findings in a concise, natural sentence. Do not alter, contra
 
         is_explicit = bool(
             plan.chart_type
-            and any(t in effective_question.lower() for t in ("bar", "line", "scatter", "histogram"))
+            and any(t in effective_question.lower() for t in ("bar", "line", "scatter", "histogram", "heatmap"))
         )
         is_compat, eff_type, err_reason = validate_chart_compatibility(
             result=result,
@@ -736,6 +736,8 @@ State the verified findings in a concise, natural sentence. Do not alter, contra
             "row_count": result.row_count,
         }
 
+    pivot_table_data = result.pivot_table.model_dump() if result.pivot_table else None
+
     return {
         "final_response": final_answer,
         "tool_used": "execute_analysis_plan",
@@ -752,6 +754,7 @@ State the verified findings in a concise, natural sentence. Do not alter, contra
         "analysis_result": result.model_dump(),
         "chart_artifact": chart_artifact,
         "analysis_table": analysis_table,
+        "pivot_table": pivot_table_data,
         "status": "ok",
         "awaiting_entity": None,
         "pending_analysis": None,

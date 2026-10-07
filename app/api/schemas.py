@@ -1,7 +1,7 @@
 from typing import Optional
 from pydantic import BaseModel, Field
 
-from app.analytics.schemas import ChartArtifact, AnalysisTable
+from app.analytics.schemas import ChartArtifact, AnalysisTable, PivotResult
 
 
 class OrderOut(BaseModel):
@@ -35,6 +35,7 @@ class ChatResponse(BaseModel):
     status: str  # "ok" | "not_found" | "out_of_scope" | "clarification" | "needs_clarification" | "error"
     chart: Optional[ChartArtifact] = None
     table: Optional[AnalysisTable] = None
+    pivot: Optional[PivotResult] = None
 
 
 class DocumentUploadResponse(BaseModel):

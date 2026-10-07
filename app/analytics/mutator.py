@@ -169,6 +169,10 @@ def apply_plan_mutation(
             raise MutationError("CHANGE_METRIC requires 'metric_delta'.")
         new_agg = mutation.metric_delta.to_aggregation_clause()
         plan_dict["aggregations"] = [new_agg.model_dump()]
+        if plan_dict.get("pivot"):
+            if mutation.metric_delta.column:
+                plan_dict["pivot"]["metric"] = mutation.metric_delta.column
+            plan_dict["pivot"]["aggregation"] = mutation.metric_delta.function.value
         if plan_dict.get("order_by"):
             old_aggs = previous_plan.aggregations or []
             old_targets = set()
@@ -231,10 +235,60 @@ def apply_plan_mutation(
             if not plan_dict["requires_chart"]:
                 plan_dict["chart_type"] = None
 
+    # 15. TOGGLE_HEATMAP: Toggle or enable heatmap visualization on pivot table
+    elif mtype == PlanMutationType.TOGGLE_HEATMAP:
+        if mutation.requires_chart is False:
+            plan_dict["requires_chart"] = False
+            plan_dict["chart_type"] = None
+        else:
+            plan_dict["requires_chart"] = True
+            plan_dict["chart_type"] = "heatmap"
+            # If no pivot yet, construct pivot from active group_by and aggregations if available
+            if not plan_dict.get("pivot") and len(plan_dict.get("group_by", [])) >= 2:
+                gbs = plan_dict["group_by"]
+                agg_col = plan_dict["aggregations"][0].get("column") if plan_dict.get("aggregations") else None
+                agg_fn = plan_dict["aggregations"][0].get("function", "sum") if plan_dict.get("aggregations") else "sum"
+                plan_dict["pivot"] = {
+                    "row_dimension": gbs[0]["column"],
+                    "column_dimension": gbs[1]["column"],
+                    "metric": agg_col or "id",
+                    "aggregation": agg_fn,
+                    "include_totals": True,
+                }
+
+    # 16. CHANGE_PIVOT_COLUMNS: Update pivot row/column dimensions or metrics
+    elif mtype == PlanMutationType.CHANGE_PIVOT_COLUMNS:
+        if mutation.pivot_delta is None:
+            raise MutationError("CHANGE_PIVOT_COLUMNS requires 'pivot_delta'.")
+        p_delta = mutation.pivot_delta
+        current_pivot = plan_dict.get("pivot") or {}
+        new_row = p_delta.row_dimension or current_pivot.get("row_dimension")
+        new_col = p_delta.column_dimension or current_pivot.get("column_dimension")
+        new_metric = p_delta.metric or current_pivot.get("metric")
+        new_agg = p_delta.aggregation.value if p_delta.aggregation else current_pivot.get("aggregation", "sum")
+        new_max_r = p_delta.max_rows if p_delta.max_rows is not None else current_pivot.get("max_rows", 20)
+        new_max_c = p_delta.max_columns if p_delta.max_columns is not None else current_pivot.get("max_columns", 15)
+        new_totals = p_delta.include_totals if p_delta.include_totals is not None else current_pivot.get("include_totals", True)
+
+        if not new_row or not new_col:
+            raise MutationError("CHANGE_PIVOT_COLUMNS requires both row_dimension and column_dimension.")
+        if not new_metric:
+            raise MutationError("CHANGE_PIVOT_COLUMNS requires a metric column.")
+
+        plan_dict["pivot"] = {
+            "row_dimension": new_row,
+            "column_dimension": new_col,
+            "metric": new_metric,
+            "aggregation": new_agg,
+            "max_rows": new_max_r,
+            "max_columns": new_max_c,
+            "include_totals": new_totals,
+        }
+
     # Handle secondary deltas if specified alongside primary mutation
     if mtype != PlanMutationType.CHANGE_LIMIT and mutation.limit_delta is not None:
         plan_dict["limit"] = max(1, min(500, mutation.limit_delta))
-    if mtype != PlanMutationType.TOGGLE_CHART:
+    if mtype not in (PlanMutationType.TOGGLE_CHART, PlanMutationType.TOGGLE_HEATMAP):
         if mutation.chart_type is not None:
             plan_dict["chart_type"] = mutation.chart_type
             plan_dict["requires_chart"] = True
@@ -279,6 +333,16 @@ def apply_plan_mutation(
             for p in c.partition_by:
                 if p not in col_names:
                     raise MutationError(f"Cumulative partition column '{p}' does not exist in dataset.")
+        if updated_plan.pivot is not None:
+            pv = updated_plan.pivot
+            if pv.row_dimension not in col_names:
+                raise MutationError(f"Pivot row dimension '{pv.row_dimension}' does not exist in dataset.")
+            if pv.column_dimension not in col_names:
+                raise MutationError(f"Pivot column dimension '{pv.column_dimension}' does not exist in dataset.")
+            if pv.metric not in col_names:
+                raise MutationError(f"Pivot metric '{pv.metric}' does not exist in dataset.")
+            if pv.row_dimension.lower() == pv.column_dimension.lower():
+                raise MutationError("Pivot row and column dimensions cannot be the same column.")
 
     return updated_plan
 
@@ -328,4 +392,18 @@ def describe_mutation(mutation: PlanMutation) -> str:
         if mutation.requires_chart is not None:
             return "Enabled visualization." if mutation.requires_chart else "Disabled visualization."
         return "Toggled visualization."
+    if mtype == PlanMutationType.TOGGLE_HEATMAP:
+        if mutation.requires_chart is False:
+            return "Disabled heatmap visualization."
+        return "Toggled heatmap visualization."
+    if mtype == PlanMutationType.CHANGE_PIVOT_COLUMNS and mutation.pivot_delta:
+        pd = mutation.pivot_delta
+        parts = []
+        if pd.row_dimension:
+            parts.append(f"rows to '{pd.row_dimension}'")
+        if pd.column_dimension:
+            parts.append(f"columns to '{pd.column_dimension}'")
+        if pd.metric:
+            parts.append(f"metric to '{pd.metric}'")
+        return f"Updated pivot table ({', '.join(parts)})." if parts else "Updated pivot table dimensions."
     return f"Applied mutation: {mtype.value}."

@@ -35,6 +35,7 @@ class ResponseEnvelope(BaseModel):
     status: str
     chart: Optional[dict] = None
     table: Optional[dict] = None
+    pivot: Optional[dict] = None
 
     @field_validator("status")
     @classmethod
@@ -134,6 +135,7 @@ def build_validated_envelope(agent_state: dict) -> dict:
             status=agent_state.get("status", "error"),
             chart=agent_state.get("chart_artifact"),
             table=agent_state.get("analysis_table"),
+            pivot=agent_state.get("pivot_table"),
         )
         return envelope.model_dump()
     except ValidationError:

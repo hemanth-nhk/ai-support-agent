@@ -177,20 +177,33 @@ def validate_chart_compatibility(
         # Requires at least 1 numeric column
         return len(num_cols) >= 1
 
+    def _can_render_heatmap() -> bool:
+        # Requires a pivot table matrix with at least 1 row and 1 column
+        if result.pivot_table is not None:
+            return len(result.pivot_table.rows) > 0 and len(result.pivot_table.columns) > 0
+        return False
+
     type_checks = {
         "bar": _can_render_bar,
         "line": _can_render_line,
         "scatter": _can_render_scatter,
         "histogram": _can_render_histogram,
+        "heatmap": _can_render_heatmap,
     }
 
     if requested_type and is_explicit:
         req = requested_type.lower()
         if req not in type_checks:
-            return False, None, f"Unsupported chart type '{requested_type}'. Supported types: bar, line, scatter, histogram."
+            return False, None, f"Unsupported chart type '{requested_type}'. Supported types: bar, line, scatter, histogram, heatmap."
         if type_checks[req]():
             return True, req, None
         else:
+            if req == "heatmap":
+                return (
+                    False,
+                    None,
+                    "Requested 'heatmap' chart is incompatible with result: requires a valid 2D cross-tab pivot result with rows and columns.",
+                )
             shape_desc = f"{len(dim_cols)} dimensions ({', '.join(dim_cols) or 'none'}) and {len(num_cols)} numeric metrics ({', '.join(num_cols) or 'none'})"
             return (
                 False,
@@ -203,6 +216,8 @@ def validate_chart_compatibility(
         return True, requested_type.lower(), None
 
     # Deterministic automatic selection
+    if result.pivot_table is not None and _can_render_heatmap():
+        return True, "heatmap", None
     if len(temp_cols) >= 1 and len(num_cols) >= 1:
         return True, "line", None
     if len(dim_cols) >= 1 and len(num_cols) >= 1:
@@ -321,6 +336,79 @@ def _render_histogram_chart(
     ax.set_title(truncate_text(title, MAX_TITLE_LENGTH), fontsize=FONT_SIZE_TITLE, fontweight="bold", color=TEXT_MAIN, pad=12)
 
 
+def _render_heatmap_chart(
+    ax: Any,
+    pivot: Any,
+    title: str,
+) -> None:
+    """Renders a bounded 2D matrix heatmap with cell annotations and colormap."""
+    import numpy as np
+
+    rows = pivot.rows[:MAX_BAR_CATEGORIES]
+    cols = pivot.columns[:15]
+    raw_matrix = pivot.values[: len(rows)]
+
+    matrix = np.full((len(rows), len(cols)), np.nan)
+    for i in range(len(rows)):
+        for j in range(len(cols)):
+            if j < len(raw_matrix[i]) and raw_matrix[i][j] is not None:
+                matrix[i, j] = raw_matrix[i][j]
+
+    cmap = matplotlib.colormaps.get_cmap("YlGnBu").with_extremes(bad="#F1F5F9")
+
+    im = ax.imshow(matrix, cmap=cmap, aspect="auto", interpolation="nearest")
+    ax.grid(False)
+
+    ax.set_xticks(range(len(cols)))
+    ax.set_xticklabels(
+        [truncate_text(c, 16) for c in cols],
+        rotation=35,
+        ha="right",
+        fontsize=FONT_SIZE_TICK,
+        color=TEXT_MAIN,
+    )
+    ax.set_yticks(range(len(rows)))
+    ax.set_yticklabels(
+        [truncate_text(r, 16) for r in rows],
+        fontsize=FONT_SIZE_TICK,
+        color=TEXT_MAIN,
+    )
+
+    if len(rows) * len(cols) <= 150:
+        valid_vals = matrix[~np.isnan(matrix)]
+        if len(valid_vals) > 0:
+            min_v = float(valid_vals.min())
+            max_v = float(valid_vals.max())
+            mid_v = (min_v + max_v) / 2.0
+        else:
+            mid_v = 0.0
+
+        for i in range(len(rows)):
+            for j in range(len(cols)):
+                val = matrix[i, j]
+                if np.isnan(val):
+                    ax.text(j, i, "—", ha="center", va="center", color=TEXT_MUTED, fontsize=FONT_SIZE_TICK)
+                else:
+                    text_color = "#FFFFFF" if val > mid_v else TEXT_MAIN
+                    if abs(val) >= 1000:
+                        val_str = f"{val:,.0f}"
+                    elif float(val).is_integer():
+                        val_str = f"{int(val)}"
+                    else:
+                        val_str = f"{val:.1f}"
+                    ax.text(j, i, val_str, ha="center", va="center", color=text_color, fontsize=FONT_SIZE_TICK, fontweight="bold")
+
+    ax.set_title(truncate_text(title, MAX_TITLE_LENGTH), fontsize=FONT_SIZE_TITLE, fontweight="bold", color=TEXT_MAIN, pad=12)
+    ax.set_xlabel(truncate_text(pivot.column_dimension, MAX_LABEL_LENGTH), fontsize=FONT_SIZE_LABEL, color=TEXT_MAIN, labelpad=8)
+    ax.set_ylabel(truncate_text(pivot.row_dimension, MAX_LABEL_LENGTH), fontsize=FONT_SIZE_LABEL, color=TEXT_MAIN, labelpad=8)
+
+    fig = ax.figure
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.ax.tick_params(labelsize=FONT_SIZE_TICK, colors=TEXT_MUTED)
+    for s in cbar.ax.spines.values():
+        s.set_color(SPINE_COLOR)
+
+
 def render_chart(
     result: AnalysisResult,
     chart_type: str,
@@ -346,7 +434,10 @@ def render_chart(
     # Deduce columns to plot
     chart_type = chart_type.lower()
     default_title = f"{chart_type.capitalize()} Chart"
-    if result.plan and result.plan.aggregations:
+    if result.pivot_table is not None:
+        pt = result.pivot_table
+        default_title = f"{pt.aggregation.title()} {pt.metric} by {pt.row_dimension} and {pt.column_dimension}"
+    elif result.plan and result.plan.aggregations:
         agg = result.plan.aggregations[0]
         agg_name = agg.alias or (f"{agg.function.value}({agg.column})" if agg.column else "Count")
         if result.plan.group_by:
@@ -388,6 +479,11 @@ def render_chart(
         elif chart_type == "histogram":
             num_col = num_cols[0] if num_cols else result.columns[0]
             _render_histogram_chart(ax, result.rows, num_col, final_title)
+
+        elif chart_type == "heatmap":
+            if result.pivot_table is None:
+                raise ChartRenderError("Cannot render heatmap without pivot table result.")
+            _render_heatmap_chart(ax, result.pivot_table, final_title)
 
         else:
             raise ChartRenderError(f"Unsupported chart_type '{chart_type}'.")

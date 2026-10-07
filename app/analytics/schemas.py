@@ -337,3 +337,139 @@ class AnalysisTable(BaseModel):
     columns: list[str]
     rows: list[list[Any]]
     row_count: int
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: Multi-Turn Analytical Memory & Incremental AST Mutation
+# ---------------------------------------------------------------------------
+
+class PlanMutationType(str, Enum):
+    NEW_QUERY = "new_query"
+    RESET_ANALYSIS = "reset_analysis"
+    ADD_FILTER = "add_filter"
+    REMOVE_FILTER = "remove_filter"
+    CHANGE_FILTER = "change_filter"
+    CHANGE_GROUP_BY = "change_group_by"
+    ADD_GROUP_BY = "add_group_by"
+    REMOVE_GROUP_BY = "remove_group_by"
+    CHANGE_METRIC = "change_metric"
+    CHANGE_SORT = "change_sort"
+    CHANGE_LIMIT = "change_limit"
+    ADD_ROLLING = "add_rolling"
+    ADD_CUMULATIVE = "add_cumulative"
+    TOGGLE_CHART = "toggle_chart"
+
+
+class FilterDelta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    column: str = Field(..., description="Target dataset column name")
+    operator: Optional[FilterOperator] = Field(
+        default=None, description="Comparison or membership operator"
+    )
+    value: Optional[Union[str, int, float, bool, list[Union[str, int, float]]]] = Field(
+        default=None, description="Literal value, range, or list of values for filtering"
+    )
+
+    def to_filter_clause(self) -> FilterClause:
+        if self.operator is None:
+            raise ValueError(f"Cannot convert FilterDelta for column '{self.column}' to FilterClause without an operator.")
+        return FilterClause(column=self.column, operator=self.operator, value=self.value)
+
+
+class GroupByDelta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    column: str = Field(..., description="Target dimension column name")
+    date_trunc: Optional[DateTrunc] = Field(
+        default=None, description="Optional date truncation bucket (year, quarter, month, day)"
+    )
+
+    @field_validator("date_trunc", mode="before")
+    @classmethod
+    def normalize_date_trunc(cls, v: Any) -> Any:
+        if isinstance(v, str) and v.lower() in ("null", "none", ""):
+            return None
+        return v
+
+    def to_group_by_clause(self) -> GroupByClause:
+        return GroupByClause(column=self.column, date_trunc=self.date_trunc)
+
+
+class MetricDelta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    column: Optional[str] = Field(
+        default=None, description="Target column, or None/'*' for general row counts"
+    )
+    function: AggregationFunction = Field(..., description="Aggregation function")
+    alias: Optional[str] = Field(default=None, description="Explicit output column alias")
+    quantile: Optional[float] = Field(
+        default=None, description="Quantile parameter for PERCENTILE_CONT (0.0 to 1.0)"
+    )
+
+    @model_validator(mode="after")
+    def validate_quantile_usage(self) -> "MetricDelta":
+        if self.function == AggregationFunction.PERCENTILE_CONT:
+            if self.quantile is None:
+                raise ValueError("PERCENTILE_CONT requires a 'quantile' parameter between 0.0 and 1.0.")
+            if not (0.0 <= self.quantile <= 1.0):
+                raise ValueError(f"quantile must be between 0.0 and 1.0, got {self.quantile}.")
+        else:
+            if self.quantile is not None:
+                raise ValueError(f"function '{self.function.value}' does not accept a 'quantile' parameter.")
+        return self
+
+    def to_aggregation_clause(self) -> AggregationClause:
+        return AggregationClause(
+            column=self.column,
+            function=self.function,
+            alias=self.alias,
+            quantile=self.quantile,
+        )
+
+
+class SortDelta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: str = Field(..., description="Group-by column or aggregation alias to sort by")
+    descending: bool = Field(default=True, description="True for DESC, False for ASC")
+
+    def to_order_by_clause(self) -> OrderByClause:
+        return OrderByClause(target=self.target, descending=self.descending)
+
+
+class PlanMutation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mutation_type: PlanMutationType = Field(..., description="Type of mutation to apply")
+    filter_delta: Optional[FilterDelta] = Field(
+        default=None, description="Filter modification delta"
+    )
+    group_by_delta: Optional[GroupByDelta] = Field(
+        default=None, description="Group-by modification delta"
+    )
+    metric_delta: Optional[MetricDelta] = Field(
+        default=None, description="Metric modification delta"
+    )
+    sort_delta: Optional[SortDelta] = Field(
+        default=None, description="Sort modification delta"
+    )
+    limit_delta: Optional[int] = Field(
+        default=None, ge=1, le=500, description="New row limit (clamped 1-500)"
+    )
+    rolling_delta: Optional[RollingWindowSpec] = Field(
+        default=None, description="Rolling window specification to add or update"
+    )
+    cumulative_delta: Optional[CumulativeSpec] = Field(
+        default=None, description="Cumulative metric specification to add or update"
+    )
+    chart_type: Optional[Literal["bar", "line", "scatter", "histogram"]] = Field(
+        default=None, description="Chart visualization type"
+    )
+    requires_chart: Optional[bool] = Field(
+        default=None, description="Whether visualization is requested"
+    )
+    new_plan: Optional[AnalysisPlan] = Field(
+        default=None, description="Complete replacement plan for NEW_QUERY mutations"
+    )

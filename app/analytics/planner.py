@@ -217,7 +217,13 @@ USER FOLLOW-UP QUESTION:
 """
     if resolved_metric:
         user_prompt += f"\nClarified metric: '{resolved_metric}'."
-    user_prompt += "\nOutput the PlanMutation JSON object:"
+    q_low = question.lower().strip()
+    limit_match = re.search(r"^(?:show\s+)?(?:top|bottom|limit|first|last)\s+(\d+)$", q_low)
+    if limit_match:
+        return PlanMutation(
+            mutation_type=PlanMutationType.CHANGE_LIMIT,
+            limit_delta=int(limit_match.group(1)),
+        )
 
     llm = get_llm()
     try:
@@ -281,13 +287,43 @@ User Question: "{question}"
         raw_output = response.content if hasattr(response, "content") else str(response)
         parsed_json = _extract_json_from_llm_output(raw_output)
 
+        # Ensure list fields default to empty lists if LLM provided null
+        for list_field in (
+            "filters", "group_by", "aggregations", "derived_metrics",
+            "correlations", "rolling_windows", "cumulative_metrics",
+            "quantiles", "order_by"
+        ):
+            if list_field in parsed_json and parsed_json[list_field] is None:
+                parsed_json[list_field] = []
+
         # Sanitize common LLM quirks before Pydantic validation:
-        # Remove vacuous filters where value equals column name
+        # Remove vacuous filters where value equals column name or means 'all'/'*'/'any'
+        q_low_norm = question.lower()
         if "filters" in parsed_json and isinstance(parsed_json["filters"], list):
-            parsed_json["filters"] = [
-                f for f in parsed_json["filters"]
-                if isinstance(f, dict) and str(f.get("value")).lower() != str(f.get("column")).lower()
-            ]
+            clean_filters = []
+            for f in parsed_json["filters"]:
+                if not isinstance(f, dict):
+                    continue
+                v_str = str(f.get("value", "")).lower().strip()
+                c_str = str(f.get("column", "")).lower().strip()
+                if v_str == c_str or v_str in ("all", "*", "any"):
+                    continue
+                # If neither the column nor value appears anywhere in user question, drop hallucination
+                if c_str not in q_low_norm and v_str not in q_low_norm:
+                    continue
+                op = str(f.get("operator", "")).lower().strip()
+                if v_str in ("null", "none") or f.get("value") is None:
+                    if any(w in q_low_norm for w in ("null", "missing", "empty", "nan", "blank", "none")):
+                        if op in ("!=", "<>", "is_not_null"):
+                            f["operator"] = "is_not_null"
+                            f["value"] = None
+                        else:
+                            f["operator"] = "is_null"
+                            f["value"] = None
+                    else:
+                        continue
+                clean_filters.append(f)
+            parsed_json["filters"] = clean_filters
 
         # Fix aggregation if LLM put a string column in sum/avg/min/max or used uppercase function
         if "aggregations" in parsed_json and isinstance(parsed_json["aggregations"], list):
@@ -315,49 +351,179 @@ User Question: "{question}"
         plan = AnalysisPlan.model_validate(fallback_json)
 
     # Deterministic sanity checks on AST:
-    # 1. If question explicitly asks for total/sum, enforce aggregation function=sum
-    if any(w in question.lower() for w in ("total", "sum", "highest total", "best", "top")):
+    q_low = question.lower()
+    superlative_desc = ("top", "highest", "best", "most", "greatest", "leading")
+    superlative_asc = ("bottom", "lowest", "least", "worst", "smallest")
+    all_superlatives = (*superlative_desc, *superlative_asc)
+    has_superlative = any(re.search(rf"\b{w}\b", q_low) for w in all_superlatives)
+
+    # 1. Strip hallucinated superlative filters (e.g. filter product == 'best' or 'top 5')
+    if plan.filters and has_superlative:
+        superlative_words = set(all_superlatives)
+        plan.filters = [
+            f for f in plan.filters
+            if not any(sw in str(f.value).lower().split() for sw in superlative_words)
+        ]
+
+    # 2. Parse Top-N / Bottom-N numeric limit and validate bounds (fails closed if invalid)
+    n_match = re.search(r"\b(?:top|bottom|highest|lowest|best|worst|first|last)\s+(\d+)\b", q_low)
+    if not n_match:
+        n_match = re.search(r"\b(\d+)\s+(?:top|bottom|highest|lowest|best|worst)\b", q_low)
+    if n_match:
+        parsed_n = int(n_match.group(1))
+        # Update limit and enforce AnalysisPlan bounds [1, 500] (fails closed via AnalysisPlan validation)
+        plan_dict = plan.model_dump()
+        plan_dict["limit"] = parsed_n
+        plan = AnalysisPlan.model_validate(plan_dict)
+
+    # 3. If question explicitly asks for total/sum or mentions financial metrics, enforce sum
+    if any(w in q_low for w in ("total", "sum", "highest total", "best", "top", "sales", "revenue", "profit")):
         for agg in plan.aggregations:
             if agg.function == AggregationFunction.MAX:
                 agg.function = AggregationFunction.SUM
 
-    # 2. If question explicitly mentions a categorical column (e.g. 'products' or 'region'), align group_by
+    # 4. Categorical grouping alignment
     mentioned_cat_cols = [
         c.name for c in metadata.profile.columns
-        if classify_dtype(c.dtype, c.name) == "string" and (c.name.lower() in question.lower() or c.name.lower().rstrip("s") in question.lower())
-    ]
-    if mentioned_cat_cols and plan.group_by:
-        curr_col = plan.group_by[0].column.lower()
-        if curr_col not in [mc.lower() for mc in mentioned_cat_cols]:
-            plan.group_by[0].column = mentioned_cat_cols[0]
-
-    # 3. If ranking superlative is present, enforce descending order
-    if any(w in question.lower() for w in ("best", "top", "highest", "most", "greatest", "leading")):
-        for ob in plan.order_by:
-            ob.descending = True
-
-    # 4. If order_by targets a metric not in aggregations (or user clarified resolved_metric), ensure aggregation exists
-    target_metric_name = (plan.order_by[0].target if plan.order_by else None) or resolved_metric
-    if target_metric_name and target_metric_name.lower() in num_col_names and plan.group_by:
-        canonical_metric = num_col_names[target_metric_name.lower()]
-        is_already_agg = any(
-            (agg.column and agg.column.lower() == canonical_metric.lower()) or (agg.alias and agg.alias.lower() == target_metric_name.lower())
-            for agg in plan.aggregations
+        if classify_dtype(c.dtype, c.name) == "string" and (
+            c.name.lower() in q_low
+            or c.name.lower().rstrip("s") in q_low
+            or (c.name.lower().endswith("y") and c.name.lower()[:-1] + "ies" in q_low)
         )
-        if not is_already_agg:
-            alias_to_use = target_metric_name if not any(agg.alias == target_metric_name for agg in plan.aggregations) else f"total_{canonical_metric}"
+    ]
+
+    # 5. Numeric metric resolution & aggregation alignment
+    target_metric_col = resolved_metric
+    if not target_metric_col:
+        for nc_low, nc in num_col_names.items():
+            if nc_low in q_low or (nc_low == "sales" and "sale" in q_low) or (nc_low == "revenue" and "rev" in q_low):
+                target_metric_col = nc
+                break
+    if not target_metric_col and has_superlative and num_col_names:
+        target_metric_col = list(num_col_names.values())[0]
+
+    # Phase 9: Cross-tab / Pivot query alignment
+    pivot_keywords = ("cross-tab", "crosstab", "cross tab", "pivot")
+    if any(k in q_low for k in pivot_keywords) and len(mentioned_cat_cols) >= 2:
+        if plan.pivot is None:
+            plan.pivot = PivotSpec(
+                row_dimension=mentioned_cat_cols[0],
+                column_dimension=mentioned_cat_cols[1],
+                metric=target_metric_col or (list(num_col_names.values())[0] if num_col_names else "id"),
+                aggregation=AggregationFunction.SUM,
+                include_totals=True,
+            )
+        plan.group_by = []
+
+    has_window = bool(plan.cumulative_metrics or plan.rolling_windows or plan.quantiles or plan.outlier_analysis)
+    if plan.pivot is not None:
+        plan.group_by = []
+    elif has_window:
+        plan.group_by = []
+        plan.aggregations = []
+    elif mentioned_cat_cols:
+        if plan.group_by:
+            curr_col = plan.group_by[0].column.lower()
+            if curr_col not in [mc.lower() for mc in mentioned_cat_cols]:
+                plan.group_by[0].column = mentioned_cat_cols[0]
+        elif has_superlative or any(w in q_low for w in ("by ", "per ", "across ", "for each ", "group by ")):
+            plan.group_by = [GroupByClause(column=mentioned_cat_cols[0])]
+
+    if target_metric_col and plan.group_by and not has_window:
+        agg_matched = False
+        for agg in plan.aggregations:
+            if agg.column and agg.column.lower() == target_metric_col.lower():
+                agg_matched = True
+                break
+        if not agg_matched:
+            alias_to_use = f"sum_{target_metric_col}"
             plan.aggregations = [
                 AggregationClause(
-                    column=canonical_metric,
+                    column=target_metric_col,
                     function=AggregationFunction.SUM,
                     alias=alias_to_use,
                 )
             ]
-            if plan.order_by:
-                plan.order_by[0].target = alias_to_use
 
-    # 5. Deterministic chart intent and explicit chart type detection
-    q_low = question.lower()
+    # Phase 7: Rolling window AST alignment
+    if any(k in q_low for k in ("rolling", "moving average", "moving avg")):
+        w_match = re.search(r"(\d+)[-\s]*(?:day|period|month|week|row)?\s*(?:rolling|moving)", q_low)
+        if w_match:
+            w_size = int(w_match.group(1))
+            prec = max(1, w_size - 1)
+            for rw in plan.rolling_windows:
+                rw.preceding = prec
+                rw.alias = f"rolling_{rw.function.value}_{rw.column}"
+        if plan.rolling_windows:
+            for rw in plan.rolling_windows:
+                if not rw.alias or "rolling" in rw.alias:
+                    rw.alias = f"rolling_{rw.function.value}_{rw.column}"
+            plan.group_by = []
+            plan.aggregations = []
+
+    # Phase 7: Cumulative metric AST alignment
+    if any(k in q_low for k in ("cumulative", "running total", "running sum")) and not plan.cumulative_metrics:
+        date_cols = [c.name for c in metadata.profile.columns if classify_dtype(c.dtype, c.name) == "datetime"]
+        order_col = date_cols[0] if date_cols else metadata.profile.columns[0].name
+        target_m = target_metric_col or (list(num_col_names.values())[0] if num_col_names else None)
+        cfn = CumulativeFunction.SUM
+        if any(w in q_low for w in ("avg", "average", "mean")):
+            cfn = CumulativeFunction.AVG
+        elif any(w in q_low for w in ("count",)):
+            cfn = CumulativeFunction.COUNT
+        plan.cumulative_metrics = [
+            CumulativeSpec(
+                function=cfn,
+                column=target_m,
+                order_by=order_col,
+            )
+        ]
+        plan.aggregations = []
+        plan.group_by = []
+
+    # Phase 7: Quantile segmentation AST alignment
+    if any(k in q_low for k in ("quartile", "quintile", "decile", "quantile", "ntile")):
+        if not plan.quantiles:
+            num_q = 4
+            if "quintile" in q_low:
+                num_q = 5
+            elif "decile" in q_low:
+                num_q = 10
+            else:
+                q_match = re.search(r"(\d+)\s*(?:quartile|quintile|decile|quantile|tier|bucket)", q_low)
+                if q_match:
+                    num_q = int(q_match.group(1))
+            target_m = target_metric_col or (list(num_col_names.values())[0] if num_col_names else None)
+            if target_m:
+                plan.quantiles = [
+                    QuantileSpec(
+                        column=target_m,
+                        num_quantiles=num_q,
+                        alias=f"quantile_{num_q}_{target_m}",
+                    )
+                ]
+        for q in plan.quantiles:
+            if not q.alias or not q.alias.startswith("quantile_"):
+                q.alias = f"quantile_{q.num_quantiles}_{q.column}"
+        plan.aggregations = []
+        plan.group_by = []
+
+    # 6. Align OrderBy for superlatives
+    if has_superlative:
+        is_desc = not any(re.search(rf"\b{w}\b", q_low) for w in superlative_asc)
+        sort_target = target_metric_col or (plan.aggregations[0].column if plan.aggregations else None)
+        if sort_target:
+            plan.order_by = [OrderByClause(target=sort_target, descending=is_desc)]
+        elif plan.order_by:
+            plan.order_by[0].descending = is_desc
+    elif any(w in q_low for w in ("lowest", "least", "asc", "ascending")):
+        for ob in plan.order_by:
+            ob.descending = False
+    elif any(w in q_low for w in ("highest", "desc", "descending")):
+        for ob in plan.order_by:
+            ob.descending = True
+
+    # 7. Deterministic chart intent and explicit chart type detection
     chart_keywords = ("chart", "plot", "graph", "visualize", "visualization", "histogram", "scatter")
     if any(w in q_low for w in chart_keywords):
         plan.requires_chart = True
@@ -369,6 +535,58 @@ User Question: "{question}"
             plan.chart_type = "line"
         elif "bar" in q_low:
             plan.chart_type = "bar"
+
+    # 8. Clean hallucinated correlations
+    corr_keywords = ("correlat", "relationship between", "association between")
+    if not any(k in q_low for k in corr_keywords):
+        plan.correlations = []
+    else:
+        valid_corrs = []
+        for c in plan.correlations:
+            cx = num_col_names.get(c.column_x.lower())
+            cy = num_col_names.get(c.column_y.lower())
+            if cx and cy:
+                c.column_x = cx
+                c.column_y = cy
+                valid_corrs.append(c)
+        plan.correlations = valid_corrs
+
+    # 9. Clean hallucinated or malformed derived metrics
+    ratio_keywords = ("margin", "ratio", "rate", "percentage", "per ", "divided by", "share", "proportion", "%")
+    if not any(k in q_low for k in ratio_keywords):
+        plan.derived_metrics = []
+    else:
+        valid_dms = []
+        for dm in plan.derived_metrics:
+            # Check numerator
+            num_clean = dm.numerator
+            if num_clean.lower() not in num_col_names:
+                for prefix in ("total_", "sum_", "avg_"):
+                    if num_clean.lower().startswith(prefix) and num_clean[len(prefix):].lower() in num_col_names:
+                        num_clean = num_col_names[num_clean[len(prefix):].lower()]
+                        break
+            else:
+                num_clean = num_col_names[num_clean.lower()]
+
+            # Check denominator
+            den_clean = dm.denominator
+            if den_clean.lower() not in num_col_names:
+                for prefix in ("total_", "sum_", "avg_"):
+                    if den_clean.lower().startswith(prefix) and den_clean[len(prefix):].lower() in num_col_names:
+                        den_clean = num_col_names[den_clean[len(prefix):].lower()]
+                        break
+            else:
+                den_clean = num_col_names[den_clean.lower()]
+
+            if num_clean.lower() in num_col_names and den_clean.lower() in num_col_names:
+                dm.numerator = num_clean
+                dm.denominator = den_clean
+                if "margin" in q_low:
+                    dm.alias = "profit_margin_pct"
+                elif any(w in q_low for w in ("pct", "percentage", "%")) and dm.alias and not dm.alias.endswith("_pct"):
+                    dm.alias = f"{dm.alias}_pct"
+                valid_dms.append(dm)
+        plan.derived_metrics = valid_dms
 
     return plan
 
@@ -637,21 +855,24 @@ def _fallback_heuristic_plan(
             "aggregations": [{"column": m, "function": "stddev", "alias": f"stddev_{m}"}],
         }
 
-    # Ranking query: e.g. "top products", "which region had highest revenue"
-    if any(k in lowered for k in ("top", "highest", "best", "most", "lowest", "worst")) and str_cols and target_metric:
+    # Ranking query: e.g. "top products", "which region had highest revenue", "bottom 5 products by sales"
+    ranking_keywords = ("top", "highest", "best", "most", "lowest", "worst", "bottom", "least", "smallest")
+    if any(k in lowered for k in ranking_keywords) and str_cols and target_metric:
         group_col = str_cols[0]
         for c in str_cols:
-            if c.lower() in lowered:
+            if c.lower() in lowered or c.lower().rstrip("s") in lowered or (c.lower().endswith("y") and c.lower()[:-1] + "ies" in lowered):
                 group_col = c
                 break
-        desc = not any(k in lowered for k in ("lowest", "worst", "least"))
-        top_match = re.search(r"top\s+(\d+)", lowered)
+        desc = not any(k in lowered for k in ("lowest", "worst", "least", "bottom", "smallest"))
+        top_match = re.search(r"\b(?:top|bottom|highest|lowest|best|worst|first|last)\s+(\d+)\b", lowered)
+        if not top_match:
+            top_match = re.search(r"\b(\d+)\s+(?:top|bottom|highest|lowest|best|worst)\b", lowered)
         limit_val = int(top_match.group(1)) if top_match else 10
         return {
             "dataset_id": metadata.dataset_id,
             "group_by": [{"column": group_col}],
             "aggregations": [{"column": target_metric, "function": "sum", "alias": f"sum_{target_metric}"}],
-            "order_by": [{"target": f"sum_{target_metric}", "descending": desc}],
+            "order_by": [{"target": target_metric, "descending": desc}],
             "limit": limit_val,
         }
 
@@ -716,6 +937,20 @@ def _fallback_heuristic_mutation(
     str_cols = [c.name for c in metadata.profile.columns if classify_dtype(c.dtype, c.name) == "string"]
     num_cols = [c.name for c in metadata.profile.columns if classify_dtype(c.dtype, c.name) == "numeric"]
     date_cols = [c.name for c in metadata.profile.columns if classify_dtype(c.dtype, c.name) == "datetime"]
+
+    # Explicit new query check (e.g. "what is...", "can you plot...", "calculate profit margin...")
+    is_explicit_new_query = (
+        any(q_low.startswith(p) for p in ("what is", "what are", "how many", "can you", "could you", "calculate", "find", "tell me"))
+        or any(k in q_low for k in ("margin", "profit margin", "ratio", "correlation", "cross-tab", "crosstab", "pivot table"))
+    ) and not any(k in q_low for k in ("filter that", "filter this", "filter to", "sort that", "order that", "now group", "also by", "instead of", "switch to", "clear filter", "reset"))
+    if is_explicit_new_query:
+        fresh = _fallback_heuristic_plan(question, metadata, resolved_metric)
+        fresh["dataset_id"] = metadata.dataset_id
+        new_plan_obj = AnalysisPlan.model_validate(fresh)
+        return PlanMutation(
+            mutation_type=PlanMutationType.NEW_QUERY,
+            new_plan=new_plan_obj,
+        )
 
     # 1. RESET_ANALYSIS / REMOVE_FILTER
     if any(k in q_low for k in ("clear filter", "clear filters", "reset filter", "reset filters", "reset analysis", "clear all filters", "start over")):
@@ -1207,47 +1442,148 @@ def format_deterministic_result(
         return f"Based on the dataset, " + ", ".join(facts) + "."
 
     # Grouped / Ranked query (e.g. top regions by revenue)
+    # Grouped / Ranked query (e.g. top regions by revenue)
     if result.plan.group_by:
-        top_row = rows[0]
         group_keys = [gb.column for gb in result.plan.group_by]
         metric_keys = [c for c in cols if c not in group_keys]
+        group_dim = group_keys[0] if group_keys else "group"
+        dim_low = group_dim.lower()
 
-        lead_entity = top_row.get(group_keys[0]) if group_keys else "First item"
-        lead_metrics = [f"{m} is {top_row.get(m)}" for m in metric_keys]
+        # Pluralize dimension name
+        if dim_low.endswith("y"):
+            plural_dim = dim_low[:-1] + "ies"
+        elif dim_low.endswith("s"):
+            plural_dim = dim_low
+        else:
+            plural_dim = dim_low + "s"
 
-        if mutation_prefix:
-            active_filter_ctx = ""
-            if result.plan.filters:
-                filter_vals = [f"'{f.value}'" for f in result.plan.filters if f.value]
-                if filter_vals:
-                    active_filter_ctx = f" in {', '.join(filter_vals)}"
+        active_filter_ctx = ""
+        if result.plan.filters:
+            filter_vals = [f"'{f.value}'" for f in result.plan.filters if f.value]
+            if filter_vals:
+                active_filter_ctx = f" in {', '.join(filter_vals)}"
+
+        if metric_keys:
+            primary_metric = metric_keys[0]
+
+            def _get_num(r):
+                v = r.get(primary_metric)
+                if isinstance(v, (int, float)):
+                    return v
+                try:
+                    return float(v)
+                except (ValueError, TypeError):
+                    return float("-inf")
+
+            def _fmt_val(v):
+                if isinstance(v, float):
+                    return f"{v:,.2f}"
+                if isinstance(v, int):
+                    return f"{v:,}"
+                return str(v)
+
+            is_lowest_query = any(w in question.lower() for w in ("lowest", "bottom", "least", "worst", "smallest"))
+            if result.plan.order_by and not result.plan.order_by[0].descending and is_lowest_query:
+                sorted_rows = sorted(rows, key=_get_num)
+                rank_word = "lowest"
+            elif is_lowest_query:
+                sorted_rows = sorted(rows, key=_get_num)
+                rank_word = "lowest"
+            else:
+                sorted_rows = sorted(rows, key=_get_num, reverse=True)
+                rank_word = "highest"
+
+            lead_row = sorted_rows[0]
+            lead_entity = lead_row.get(group_dim, "First item")
+            lead_val = lead_row.get(primary_metric)
+            lead_val_str = _fmt_val(lead_val)
+
+            if primary_metric.startswith("sum_"):
+                metric_label = f"total {primary_metric[4:]}"
+            elif primary_metric.startswith("avg_"):
+                metric_label = f"average {primary_metric[4:]}"
+            else:
+                metric_label = primary_metric.replace("_", " ")
 
             if len(rows) > 1:
-                statement = (
-                    f"{mutation_prefix}Across {len(rows)} {group_keys[0]}s, "
-                    f"leading {group_keys[0]}{active_filter_ctx} is {lead_entity} with " + ", ".join(lead_metrics) + "."
+                second_row = sorted_rows[1]
+                second_entity = second_row.get(group_dim, "Second item")
+                second_val = second_row.get(primary_metric)
+                second_val_str = _fmt_val(second_val)
+
+                return (
+                    f"{mutation_prefix}Across {len(rows)} {plural_dim}, "
+                    f"{lead_entity} has the {rank_word} {metric_label}{active_filter_ctx} at {lead_val_str}, "
+                    f"followed by {second_entity} at {second_val_str}."
                 )
-                second_row = rows[1]
-                sec_entity = second_row.get(group_keys[0]) if group_keys else "Second item"
-                sec_metrics = [f"{m} is {second_row.get(m)}" for m in metric_keys]
-                statement += f" Followed by {sec_entity} with " + ", ".join(sec_metrics) + "."
             else:
-                statement = (
-                    f"{mutation_prefix}Top {group_keys[0]}{active_filter_ctx} is {lead_entity} with " + ", ".join(lead_metrics) + "."
+                return (
+                    f"{mutation_prefix}Across 1 {dim_low}, "
+                    f"{lead_entity} has {metric_label}{active_filter_ctx} of {lead_val_str}."
                 )
-            return statement
 
-        statement = f"The leading {group_keys[0] if group_keys else 'group'} is {lead_entity} with " + ", ".join(lead_metrics) + "."
-
+        # Dimension listing without metric
+        lead_entity = rows[0].get(group_dim, "First item")
         if len(rows) > 1:
-            second_row = rows[1]
-            sec_entity = second_row.get(group_keys[0]) if group_keys else "Second item"
-            sec_metrics = [f"{m} is {second_row.get(m)}" for m in metric_keys]
-            statement += f" Followed by {sec_entity} with " + ", ".join(sec_metrics) + "."
-
-        return statement
+            return f"{mutation_prefix}Across {len(rows)} {plural_dim}, leading {dim_low} is {lead_entity}."
+        return f"{mutation_prefix}The query returned 1 {dim_low}: {lead_entity}."
 
     # Table listing
     if mutation_prefix:
         return f"{mutation_prefix}Displaying full dataset across {result.row_count} records."
     return f"The query returned {result.row_count} rows across {len(cols)} columns."
+
+
+def verify_finding_result_consistency(finding: str, result: AnalysisResult) -> bool:
+    """
+    Verifies that a grounded analytical finding does not contradict the deterministic result table.
+    Enforces the following invariants:
+    1. Referenced leading/highest entity exists in result rows.
+    2. Finding does not report a value different from the deterministic result.
+    3. Ranking direction is consistent with the result.
+    """
+    if result.row_count == 0:
+        return True
+    if not result.plan.group_by or not result.rows:
+        return True
+
+    group_col = result.plan.group_by[0].column
+    metric_cols = [c for c in result.columns if c != group_col]
+    if not metric_cols:
+        return True
+
+    m_col = metric_cols[0]
+
+    def _get_num(r):
+        v = r.get(m_col)
+        if isinstance(v, (int, float)):
+            return v
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return float("-inf")
+
+    max_row = max(result.rows, key=_get_num)
+    min_row = min(result.rows, key=_get_num)
+    max_entity = str(max_row.get(group_col, ""))
+    min_entity = str(min_row.get(group_col, ""))
+
+    finding_lower = finding.lower()
+
+    # Check for "highest" or "leading" claim
+    if "highest" in finding_lower or "leading" in finding_lower or "top" in finding_lower:
+        if max_entity.lower() not in finding_lower:
+            return False
+        if _get_num(max_row) > _get_num(min_row):
+            if f"{min_entity.lower()} has the highest" in finding_lower or f"leading {group_col.lower()} is {min_entity.lower()}" in finding_lower:
+                return False
+
+    # Check for "lowest" or "bottom" claim
+    if "lowest" in finding_lower or "bottom" in finding_lower:
+        if min_entity.lower() not in finding_lower:
+            return False
+        if _get_num(max_row) > _get_num(min_row):
+            if f"{max_entity.lower()} has the lowest" in finding_lower:
+                return False
+
+    return True

@@ -13,6 +13,12 @@
   const STORAGE_KEY_CUSTOMER = 'support_agent_demo_customer';
   const STORAGE_KEY_THEME = 'support_theme';
   const STORAGE_KEY_API_KEY = 'support_api_key';
+  const STORAGE_KEY_WORKSPACE_MODE = 'support_workspace_mode';
+
+  // --- UI-2: Top-Level Workspace Modes ---
+  const WORKSPACE_MODE_SUPPORT = 'support';
+  const WORKSPACE_MODE_DATASET = 'dataset';
+  let currentWorkspaceMode = WORKSPACE_MODE_SUPPORT;
 
   // --- Demo Customers Dataset (Testing Context Only) ---
   const DEMO_CUSTOMERS = {
@@ -28,6 +34,16 @@
   let activeDemoCustomer = '1';
   let isLoading = false;
   let pendingDeleteThreadId = null;
+  let activeModalTriggerEl = null;
+
+  function restoreModalFocus() {
+    if (activeModalTriggerEl && typeof activeModalTriggerEl.focus === 'function' && document.body.contains(activeModalTriggerEl)) {
+      try {
+        activeModalTriggerEl.focus();
+      } catch (_) {}
+    }
+    activeModalTriggerEl = null;
+  }
 
   // --- DOM Elements ---
   const chatScrollArea = document.querySelector('.chat-scroll-area');
@@ -39,6 +55,32 @@
   const sendBtn = document.getElementById('sendBtn');
   const newChatBtn = document.getElementById('newChatBtn');
   const sessionUuidText = document.getElementById('sessionUuidText');
+
+  // UI-2: Mode Selector & Sidebar Panels
+  const tabSupportModeBtn = document.getElementById('tabSupportModeBtn');
+  const tabDatasetModeBtn = document.getElementById('tabDatasetModeBtn');
+  const supportSidebarPanel = document.getElementById('supportSidebarPanel');
+  const datasetSidebarPanel = document.getElementById('datasetSidebarPanel');
+
+  // UI-2: Sidebar Dataset Context Elements
+  const sidebarDatasetUploadBtn = document.getElementById('sidebarDatasetUploadBtn');
+  const sidebarSwitchDatasetBtn = document.getElementById('sidebarSwitchDatasetBtn');
+  const sidebarDatasetEmptyState = document.getElementById('sidebarDatasetEmptyState');
+  const sidebarDatasetActiveCard = document.getElementById('sidebarDatasetActiveCard');
+  const sidebarDatasetFilename = document.getElementById('sidebarDatasetFilename');
+  const sidebarDatasetFormatTag = document.getElementById('sidebarDatasetFormatTag');
+  const sidebarRowsVal = document.getElementById('sidebarRowsVal');
+  const sidebarColsVal = document.getElementById('sidebarColsVal');
+  const sidebarMissingVal = document.getElementById('sidebarMissingVal');
+  const sidebarDupsVal = document.getElementById('sidebarDupsVal');
+  const sidebarColsCount = document.getElementById('sidebarColsCount');
+  const sidebarColumnsList = document.getElementById('sidebarColumnsList');
+  const datasetSessionUuidText = document.getElementById('datasetSessionUuidText');
+
+  // UI-2: Center Schema Table Toggle
+  const toggleSchemaTableBtn = document.getElementById('toggleSchemaTableBtn');
+  const toggleSchemaTableBtnText = document.getElementById('toggleSchemaTableBtnText');
+  const workspaceSchemaSection = document.getElementById('workspaceSchemaSection');
 
   // Toolbar & Header Controls
   const activeThreadTitle = document.getElementById('activeThreadTitle');
@@ -119,7 +161,36 @@
   const closeChartModalBtn = document.getElementById('closeChartModalBtn');
   const closeChartModalBottomBtn = document.getElementById('closeChartModalBottomBtn');
 
+  // UI-1: Full Result Table Modal Elements
+  const tableExpandModal = document.getElementById('tableExpandModal');
+  const modalTableTitle = document.getElementById('modalTableTitle');
+  const modalTableRowCount = document.getElementById('modalTableRowCount');
+  const modalTableExportBtn = document.getElementById('modalTableExportBtn');
+  const closeTableModalBtn = document.getElementById('closeTableModalBtn');
+  const closeTableModalBottomBtn = document.getElementById('closeTableModalBottomBtn');
+  const modalTableSearchInput = document.getElementById('modalTableSearchInput');
+  const modalTableFilteredStatus = document.getElementById('modalTableFilteredStatus');
+  const modalResultThead = document.getElementById('modalResultThead');
+  const modalResultTbody = document.getElementById('modalResultTbody');
+
+  // UI-1: Dataset Intelligence Conversational Architecture Elements
+  const datasetIntelligenceCard = document.getElementById('datasetIntelligenceCard');
+  const datasetChatScrollArea = document.getElementById('datasetChatScrollArea');
+  const datasetChatEmptyState = document.getElementById('datasetChatEmptyState');
+  const datasetChatTurns = document.getElementById('datasetChatTurns');
+  const clearDatasetChatBtn = document.getElementById('clearDatasetChatBtn');
+  const datasetComposerChips = document.getElementById('datasetComposerChips');
+  const datasetChatForm = document.getElementById('datasetChatForm');
+  const datasetChatInput = document.getElementById('datasetChatInput');
+  const datasetSendBtn = document.getElementById('datasetSendBtn');
+  const datasetSendBtnText = document.getElementById('datasetSendBtnText');
+  const datasetSendSpinner = document.getElementById('datasetSendSpinner');
+
   let activeDataset = null;
+  let activeDatasetTurns = [];
+  let isDatasetLoading = false;
+  let activeModalTableData = { columns: [], rows: [], title: '' };
+
 
   // Delete Confirmation Modal Elements
   const deleteConfirmModal = document.getElementById('deleteConfirmModal');
@@ -132,6 +203,7 @@
   // Settings Panel Elements
   const sidebarRight = document.getElementById('sidebarRight');
   const toggleSettingsBtn = document.getElementById('toggleSettingsBtn');
+  const closeSettingsBtn = document.getElementById('closeSettingsBtn');
   const apiKeyInput = document.getElementById('apiKeyInput');
   const saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
   const toggleKeyVisibilityBtn = document.getElementById('toggleKeyVisibilityBtn');
@@ -276,6 +348,9 @@
 
         const content = document.createElement('div');
         content.className = 'recent-chat-content';
+        content.setAttribute('role', 'button');
+        content.setAttribute('tabindex', '0');
+        content.setAttribute('aria-label', `Open conversation: ${t.title}`);
         content.innerHTML = `
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
@@ -283,6 +358,12 @@
           <span class="recent-chat-title" title="${escapeHtml(t.title)}">${escapeHtml(t.title)}</span>
         `;
         content.addEventListener('click', () => switchToThread(t.id));
+        content.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            switchToThread(t.id);
+          }
+        });
 
         // Action buttons (Archive, Delete)
         const actions = document.createElement('div');
@@ -291,6 +372,7 @@
         const archiveBtn = document.createElement('button');
         archiveBtn.className = 'item-micro-btn';
         archiveBtn.title = 'Archive conversation';
+        archiveBtn.setAttribute('aria-label', `Archive conversation: ${t.title}`);
         archiveBtn.innerHTML = `
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="21 8 21 21 3 21 3 8"></polyline>
@@ -306,6 +388,7 @@
         const delBtn = document.createElement('button');
         delBtn.className = 'item-micro-btn danger';
         delBtn.title = 'Delete conversation';
+        delBtn.setAttribute('aria-label', `Delete conversation: ${t.title}`);
         delBtn.innerHTML = `
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -343,6 +426,9 @@
 
           const content = document.createElement('div');
           content.className = 'recent-chat-content';
+          content.setAttribute('role', 'button');
+          content.setAttribute('tabindex', '0');
+          content.setAttribute('aria-label', `Restore or open conversation: ${t.title}`);
           content.innerHTML = `
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="21 8 21 21 3 21 3 8"></polyline>
@@ -351,6 +437,12 @@
             <span class="recent-chat-title" title="${escapeHtml(t.title)}">${escapeHtml(t.title)}</span>
           `;
           content.addEventListener('click', () => switchToThread(t.id));
+          content.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              switchToThread(t.id);
+            }
+          });
 
           const actions = document.createElement('div');
           actions.className = 'item-action-btns';
@@ -358,6 +450,7 @@
           const restoreBtn = document.createElement('button');
           restoreBtn.className = 'item-micro-btn';
           restoreBtn.title = 'Restore to active';
+          restoreBtn.setAttribute('aria-label', `Restore conversation: ${t.title}`);
           restoreBtn.innerHTML = `
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="1 4 1 10 7 10"></polyline>
@@ -372,6 +465,7 @@
           const delBtn = document.createElement('button');
           delBtn.className = 'item-micro-btn danger';
           delBtn.title = 'Delete permanently';
+          delBtn.setAttribute('aria-label', `Delete permanently: ${t.title}`);
           delBtn.innerHTML = `
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -491,6 +585,8 @@
       console.error('Document upload error:', err);
       showToast('Network error uploading document.');
       updateAttachmentUI(thread ? thread.attachment : null);
+    } finally {
+      if (attachDocBtn) attachDocBtn.disabled = false;
     }
   }
 
@@ -645,6 +741,9 @@
       }
     } finally {
       if (workspaceUploadBtn) workspaceUploadBtn.disabled = false;
+      if (sidebarDatasetUploadBtn) sidebarDatasetUploadBtn.disabled = false;
+      if (workspaceUploadTriggerBtn) workspaceUploadTriggerBtn.disabled = false;
+      if (attachDatasetBtn) attachDatasetBtn.disabled = false;
     }
   }
 
@@ -659,51 +758,432 @@
     showToast('Dataset detached from conversation.');
   }
 
-  function showWorkspaceEmpty() {
-    if (workspaceEmptyState) workspaceEmptyState.style.display = 'flex';
-    if (workspaceContentCard) workspaceContentCard.style.display = 'none';
-    if (workspaceSwitchBtn) workspaceSwitchBtn.style.display = 'none';
-    if (workspaceActiveDatasetLabel) workspaceActiveDatasetLabel.textContent = 'No dataset selected';
+  function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
   }
 
-  function renderWorkspaceDataset(data) {
-    if (!data) return;
-    activeDataset = data;
-
-    if (workspaceActiveDatasetLabel) {
-      workspaceActiveDatasetLabel.textContent = `${data.filename} (${data.dataset_id.slice(0, 8)}...)`;
+  function formatCellValue(val) {
+    if (val === null || val === undefined) return '';
+    if (typeof val === 'number') {
+      if (Number.isInteger(val)) return val.toLocaleString();
+      return val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
-    if (workspaceEmptyState) workspaceEmptyState.style.display = 'none';
-    if (workspaceContentCard) workspaceContentCard.style.display = 'flex';
-    if (workspaceSwitchBtn) workspaceSwitchBtn.style.display = 'inline-flex';
+    return String(val);
+  }
 
-    if (profileFormatTag) profileFormatTag.textContent = (data.format || 'csv').toUpperCase();
-    if (profileRowsVal) profileRowsVal.textContent = (data.row_count || 0).toLocaleString();
-    if (profileColsVal) profileColsVal.textContent = (data.column_count || 0).toLocaleString();
+  function exportTableToCsv(columns, rows, filename = 'analysis_result.csv') {
+    if (!columns || !rows || rows.length === 0) {
+      showToast('No table data to export');
+      return;
+    }
+    const lines = [];
+    lines.push(columns.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','));
+    rows.forEach((row) => {
+      const line = row
+        .map((cell) => {
+          if (cell === null || cell === undefined) return '""';
+          if (typeof cell === 'number') return String(cell); // raw unformatted numeric value
+          return `"${String(cell).replace(/"/g, '""')}"`;
+        })
+        .join(',');
+      lines.push(line);
+    });
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename.endsWith('.csv') ? filename : filename + '.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast('Exported raw CSV');
+  }
 
-    const prof = data.profile || {};
-    if (profileMissingVal) profileMissingVal.textContent = (prof.missing_cells || 0).toLocaleString();
-    if (profileDupsVal) profileDupsVal.textContent = (prof.duplicate_rows || 0).toLocaleString();
+  function openTableModal(columns, rows, title = 'Query Result Data') {
+    if (!tableExpandModal) return;
+    activeModalTriggerEl = document.activeElement;
+    activeModalTableData = { columns, rows, title };
 
-    if (workspaceColumnsTbody && prof.columns) {
-      workspaceColumnsTbody.innerHTML = '';
-      prof.columns.forEach((col) => {
-        const tr = document.createElement('tr');
-        const missingPct = ((col.missing_percentage || 0) * 100).toFixed(1);
-        tr.innerHTML = `
-          <td><strong>${col.name}</strong></td>
-          <td><span class="profile-format-tag">${col.dtype}</span></td>
-          <td><code>${col.dtype}</code></td>
-          <td>${col.missing_count || 0} (${missingPct}%)</td>
-          <td>${(col.unique_count || 0).toLocaleString()}</td>
-        `;
-        workspaceColumnsTbody.appendChild(tr);
+    if (modalTableTitle) modalTableTitle.textContent = title;
+    if (modalTableRowCount) modalTableRowCount.textContent = `${rows.length} rows`;
+    if (modalTableSearchInput) modalTableSearchInput.value = '';
+    if (modalTableFilteredStatus) modalTableFilteredStatus.textContent = `Showing all ${rows.length} rows`;
+
+    renderModalTableRows(columns, rows);
+    tableExpandModal.style.display = 'flex';
+    if (modalTableSearchInput) modalTableSearchInput.focus();
+  }
+
+  function renderModalTableRows(columns, rows) {
+    if (modalResultThead) {
+      modalResultThead.innerHTML = `<tr>${columns.map((c) => `<th>${escapeHtml(String(c))}</th>`).join('')}</tr>`;
+    }
+    if (modalResultTbody) {
+      modalResultTbody.innerHTML = rows
+        .map((r) => `<tr>${r.map((v) => `<td>${escapeHtml(formatCellValue(v))}</td>`).join('')}</tr>`)
+        .join('');
+    }
+  }
+
+  function filterModalTable() {
+    if (!activeModalTableData || !activeModalTableData.rows) return;
+    const term = (modalTableSearchInput ? modalTableSearchInput.value : '').toLowerCase().trim();
+    if (!term) {
+      renderModalTableRows(activeModalTableData.columns, activeModalTableData.rows);
+      if (modalTableFilteredStatus) {
+        modalTableFilteredStatus.textContent = `Showing all ${activeModalTableData.rows.length} rows`;
+      }
+      return;
+    }
+    const filtered = activeModalTableData.rows.filter((row) =>
+      row.some((cell) => cell !== null && cell !== undefined && String(cell).toLowerCase().includes(term))
+    );
+    renderModalTableRows(activeModalTableData.columns, filtered);
+    if (modalTableFilteredStatus) {
+      modalTableFilteredStatus.textContent = `Showing ${filtered.length} of ${activeModalTableData.rows.length} rows`;
+    }
+  }
+
+  function closeTableModal() {
+    if (!tableExpandModal) return;
+    tableExpandModal.style.display = 'none';
+    restoreModalFocus();
+  }
+
+  function deriveAstBadgeText(query, data) {
+    if (!data) return 'Analysis: DATASET_ANALYSIS';
+    if (data.pivot) {
+      const agg = (data.pivot.aggregation || 'SUM').toUpperCase();
+      const val = data.pivot.value_column || 'Value';
+      const row = data.pivot.row_dimension || 'Dimension';
+      const col = data.pivot.column_dimension || 'Category';
+      return `Analysis: ${agg}(${val}) • Rows: ${row} • Cols: ${col}`;
+    }
+
+    if (data.table && Array.isArray(data.table.columns) && data.table.columns.length > 0) {
+      const q = (query || '').toLowerCase();
+      const cols = data.table.columns;
+
+      // Determine aggregation
+      let agg = 'SUM';
+      if (q.includes('average') || q.includes('avg')) agg = 'AVG';
+      else if (q.includes('count')) agg = 'COUNT';
+      else if (q.includes('maximum') || q.includes('max')) agg = 'MAX';
+      else if (q.includes('minimum') || q.includes('min')) agg = 'MIN';
+
+      // Find metric column and dimension column
+      let metricCol = '';
+      let dimCol = '';
+
+      for (const col of cols) {
+        const lower = col.toLowerCase();
+        if (
+          lower.includes('sales') ||
+          lower.includes('amount') ||
+          lower.includes('total') ||
+          lower.includes('price') ||
+          lower.includes('quantity')
+        ) {
+          if (!metricCol) metricCol = col;
+        } else {
+          if (!dimCol) dimCol = col;
+        }
+      }
+      if (!dimCol && cols.length > 0) dimCol = cols[0];
+      if (!metricCol && cols.length > 1) metricCol = cols[1];
+
+      // Formulate AST description
+      let badge = metricCol ? `Analysis: ${agg}(${metricCol})` : `Analysis: ${agg}`;
+      if (dimCol) badge += ` • by ${dimCol}`;
+
+      // Order & Limit
+      const isTop = q.includes('top');
+      const isBottom = q.includes('bottom');
+      const isDesc = isTop || q.includes('desc') || q.includes('highest');
+      const isAsc = isBottom || q.includes('asc') || q.includes('lowest');
+
+      if (isDesc) badge += ' • DESC';
+      else if (isAsc) badge += ' • ASC';
+
+      // Limit detection
+      const limitMatch = q.match(/\b(?:top|limit|first|bottom)\s*(\d+)\b/i);
+      if (limitMatch && limitMatch[1]) {
+        badge += ` • Limit ${limitMatch[1]}`;
+      } else if (data.table.rows && data.table.rows.length === 5 && isTop) {
+        badge += ' • Limit 5';
+      }
+
+      return badge;
+    }
+
+    return `Analysis: ${data.intent || 'DATASET_ANALYSIS'} • ${data.tool_used || 'query_dataset'}`;
+  }
+
+  function getDatasetTurnsStorageKey(datasetId) {
+    return `support_dataset_turns_${datasetId}`;
+  }
+
+  function loadDatasetTurns(datasetId) {
+    if (!datasetId) return [];
+    try {
+      const raw = localStorage.getItem(getDatasetTurnsStorageKey(datasetId));
+      return raw ? JSON.parse(raw) : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function saveDatasetTurns(datasetId, turns) {
+    if (!datasetId) return;
+    try {
+      localStorage.setItem(getDatasetTurnsStorageKey(datasetId), JSON.stringify(turns));
+    } catch (_) {}
+  }
+
+  function scrollDatasetChatToBottom() {
+    if (datasetChatScrollArea) {
+      datasetChatScrollArea.scrollTop = datasetChatScrollArea.scrollHeight;
+    }
+  }
+
+  function appendDatasetTypingIndicator() {
+    if (!datasetChatTurns) return;
+    const existing = document.getElementById('activeDatasetTypingIndicator');
+    if (existing) existing.remove();
+
+    const turn = document.createElement('div');
+    turn.className = 'dataset-turn dataset-turn-assistant';
+    turn.id = 'activeDatasetTypingIndicator';
+
+    const card = document.createElement('div');
+    card.className = 'analytical-card';
+    card.style.padding = '12px 16px';
+    card.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 0.82rem;">
+        <span class="spinner-small" style="display: inline-block;"></span>
+        <span>Compiling deterministic AnalysisPlan &amp; executing DuckDB query...</span>
+      </div>
+    `;
+    turn.appendChild(card);
+    datasetChatTurns.appendChild(turn);
+    scrollDatasetChatToBottom();
+  }
+
+  function removeDatasetTypingIndicator() {
+    const el = document.getElementById('activeDatasetTypingIndicator');
+    if (el) el.remove();
+  }
+
+  function renderDatasetConversation(turns) {
+    if (!datasetChatScrollArea) return;
+
+    if (!turns || turns.length === 0) {
+      if (datasetChatEmptyState) datasetChatEmptyState.style.display = 'flex';
+      if (datasetChatTurns) {
+        datasetChatTurns.style.display = 'none';
+        datasetChatTurns.innerHTML = '';
+      }
+      return;
+    }
+
+    if (datasetChatEmptyState) datasetChatEmptyState.style.display = 'none';
+    if (datasetChatTurns) {
+      datasetChatTurns.style.display = 'flex';
+      datasetChatTurns.innerHTML = '';
+
+      turns.forEach((turn) => {
+        if (turn.sender === 'user') {
+          const userTurnEl = document.createElement('div');
+          userTurnEl.className = 'dataset-turn dataset-turn-user';
+          userTurnEl.innerHTML = `
+            <div class="dataset-user-bubble">${escapeHtml(turn.query || '')}</div>
+            <div class="dataset-turn-time">${escapeHtml(turn.timestamp || formatTime())}</div>
+          `;
+          datasetChatTurns.appendChild(userTurnEl);
+        } else if (turn.sender === 'assistant' && turn.data) {
+          const asstTurnEl = renderDatasetAssistantTurnElement(turn);
+          datasetChatTurns.appendChild(asstTurnEl);
+        }
       });
     }
+
+    scrollDatasetChatToBottom();
   }
 
-  async function runWorkspaceAnalysis(queryText) {
-    const query = (queryText || (workspaceQueryInput ? workspaceQueryInput.value : '')).trim();
+  function renderDatasetAssistantTurnElement(turn) {
+    const data = turn.data;
+    const turnEl = document.createElement('div');
+    turnEl.className = 'dataset-turn dataset-turn-assistant';
+
+    // If status is error, show error card with retry button
+    if (data.status === 'error' || data.intent === 'ERROR' || data.intent === 'NETWORK_ERROR') {
+      const errCard = document.createElement('div');
+      errCard.className = 'analytical-card analytical-error-card';
+      const errMsg = data.response || 'An error occurred during dataset analysis.';
+      errCard.innerHTML = `
+        <div class="analytical-error-body">
+          <div class="analytical-error-msg">⚠️ ${escapeHtml(errMsg)}</div>
+          <button type="button" class="analytical-retry-btn" title="Retry this query">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="1 4 1 10 7 10"></polyline>
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+            </svg>
+            <span>Retry</span>
+          </button>
+        </div>
+      `;
+      const retryBtn = errCard.querySelector('.analytical-retry-btn');
+      if (retryBtn) {
+        retryBtn.addEventListener('click', () => {
+          if (turn.userQuery) runDatasetChat(turn.userQuery);
+        });
+      }
+      turnEl.appendChild(errCard);
+      return turnEl;
+    }
+
+    const card = document.createElement('div');
+    card.className = 'analytical-card';
+
+    // 1. Grounded Finding
+    const findingBox = document.createElement('div');
+    findingBox.className = 'analytical-finding';
+    findingBox.innerHTML = `
+      <span class="analytical-finding-icon">💡</span>
+      <div class="analytical-finding-text">${escapeHtml(data.response || '')}</div>
+    `;
+    card.appendChild(findingBox);
+
+    // 2. Inline Chart Card (when chart available)
+    if (data.chart && data.chart.url) {
+      const chartCard = document.createElement('div');
+      chartCard.className = 'workspace-chart-card';
+      chartCard.innerHTML = `
+        <div class="chart-header-row">
+          <div class="chart-title-wrap">
+            <span class="chart-title-icon">📊</span>
+            <span class="chart-title-text">${escapeHtml(data.chart.title || 'Generated Chart')}</span>
+          </div>
+          <div class="chart-actions">
+            <button type="button" class="chart-action-btn expand-chart-btn" title="Fullscreen Chart">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="15 3 21 3 21 9"></polyline>
+                <polyline points="9 21 3 21 3 15"></polyline>
+                <line x1="21" y1="3" x2="14" y2="10"></line>
+                <line x1="3" y1="21" x2="10" y2="14"></line>
+              </svg>
+              <span>Expand</span>
+            </button>
+            <a href="${data.chart.url}" download="${escapeHtml(data.chart.filename || 'chart.png')}" class="chart-action-btn" title="Download PNG">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              <span>Download</span>
+            </a>
+          </div>
+        </div>
+        <div class="chart-image-wrap">
+          <img src="${data.chart.url}" alt="${escapeHtml(data.chart.title || 'Chart')}" class="chart-img-fluid" />
+        </div>
+      `;
+      const expandBtn = chartCard.querySelector('.expand-chart-btn');
+      if (expandBtn) {
+        expandBtn.addEventListener('click', () => openChartModal(data.chart.url, data.chart.title || 'Chart View'));
+      }
+      card.appendChild(chartCard);
+    }
+
+    // 3. Compact Table Preview (when table available)
+    if (data.table && Array.isArray(data.table.columns) && Array.isArray(data.table.rows) && data.table.rows.length > 0) {
+      const totalRows = data.table.row_count || data.table.rows.length;
+      const previewRows = data.table.rows.slice(0, 5);
+
+      const tableBox = document.createElement('div');
+      tableBox.className = 'table-preview-box';
+
+      const tblHead = `<tr>${data.table.columns.map((c) => `<th>${escapeHtml(String(c))}</th>`).join('')}</tr>`;
+      const tblBody = previewRows
+        .map((r) => `<tr>${r.map((v) => `<td>${escapeHtml(formatCellValue(v))}</td>`).join('')}</tr>`)
+        .join('');
+
+      tableBox.innerHTML = `
+        <div class="table-preview-header">
+          <div class="table-preview-title">
+            <span>📋</span>
+            <span>Table Preview (Showing ${previewRows.length} of ${totalRows} rows)</span>
+          </div>
+          <span class="table-preview-count">${data.table.columns.length} columns</span>
+        </div>
+        <div class="table-scroll-wrap">
+          <table class="analysis-result-table">
+            <thead>${tblHead}</thead>
+            <tbody>${tblBody}</tbody>
+          </table>
+        </div>
+        <div class="table-preview-footer">
+          <button type="button" class="btn-view-all">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+            <span>View all ${totalRows} rows</span>
+          </button>
+          <button type="button" class="btn-export-csv" title="Export raw numerical values to CSV">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            <span>Export CSV</span>
+          </button>
+        </div>
+      `;
+
+      const viewAllBtn = tableBox.querySelector('.btn-view-all');
+      if (viewAllBtn) {
+        viewAllBtn.addEventListener('click', () => {
+          openTableModal(data.table.columns, data.table.rows, turn.userQuery || 'Query Result Data');
+        });
+      }
+
+      const exportBtn = tableBox.querySelector('.btn-export-csv');
+      if (exportBtn) {
+        exportBtn.addEventListener('click', () => {
+          exportTableToCsv(data.table.columns, data.table.rows, 'analysis_result.csv');
+        });
+      }
+
+      card.appendChild(tableBox);
+    }
+
+    // 4. AST / Query Badge & Timestamp
+    const badgeText = deriveAstBadgeText(turn.userQuery, data);
+    const badgeRow = document.createElement('div');
+    badgeRow.className = 'ast-badge-container';
+    badgeRow.innerHTML = `
+      <span class="ast-badge" title="Deterministic DuckDB AST Analysis">
+        <span class="ast-badge-icon">⚡</span>
+        <span>${escapeHtml(badgeText)}</span>
+      </span>
+      <span class="dataset-turn-time">${escapeHtml(turn.timestamp || formatTime())}</span>
+    `;
+    card.appendChild(badgeRow);
+
+    turnEl.appendChild(card);
+    return turnEl;
+  }
+
+  async function runDatasetChat(queryText) {
+    const query = (queryText || (datasetChatInput ? datasetChatInput.value : '')).trim();
     if (!query) {
       showToast('Please enter an analytical question.');
       return;
@@ -712,10 +1192,29 @@
       showToast('No active dataset uploaded. Please upload a dataset first.');
       return;
     }
+    if (isDatasetLoading) return;
 
-    if (analyzeBtnText) analyzeBtnText.textContent = 'Analyzing...';
-    if (analyzeBtnSpinner) analyzeBtnSpinner.style.display = 'inline-block';
-    if (workspaceAnalyzeBtn) workspaceAnalyzeBtn.disabled = true;
+    // Immediately render user turn
+    const userTime = formatTime();
+    const userTurn = {
+      id: 'dt-u-' + Date.now(),
+      sender: 'user',
+      query: query,
+      timestamp: userTime,
+    };
+    activeDatasetTurns.push(userTurn);
+    saveDatasetTurns(activeDataset.dataset_id, activeDatasetTurns);
+    renderDatasetConversation(activeDatasetTurns);
+
+    // Composer loading state
+    if (datasetChatInput) datasetChatInput.value = '';
+    isDatasetLoading = true;
+    if (datasetSendBtn) datasetSendBtn.disabled = true;
+    if (datasetSendSpinner) datasetSendSpinner.style.display = 'inline-block';
+    if (datasetSendBtnText) datasetSendBtnText.style.display = 'none';
+    if (datasetChatInput) datasetChatInput.disabled = true;
+
+    appendDatasetTypingIndicator();
 
     try {
       const headers = { 'Content-Type': 'application/json' };
@@ -736,82 +1235,240 @@
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        showToast(data.detail || `Analysis request failed (${res.status})`);
-        return;
-      }
+      removeDatasetTypingIndicator();
 
-      // Render Analytical Findings
-      if (workspaceResultsCard) workspaceResultsCard.style.display = 'block';
-      if (workspaceFindingText) workspaceFindingText.textContent = data.response;
-
-      // Render Result Table
-      if (data.table && data.table.columns && data.table.rows && data.table.rows.length > 0) {
-        if (workspaceResultTableBox) workspaceResultTableBox.style.display = 'block';
-        if (workspaceTableCountTag) {
-          workspaceTableCountTag.textContent = `Showing ${data.table.rows.length} of ${data.table.row_count} rows`;
-        }
-        if (workspaceResultThead) {
-          workspaceResultThead.innerHTML = `<tr>${data.table.columns.map((c) => `<th>${c}</th>`).join('')}</tr>`;
-        }
-        if (workspaceResultTbody) {
-          workspaceResultTbody.innerHTML = data.table.rows
-            .map((r) => `<tr>${r.map((val) => `<td>${val !== null && val !== undefined ? String(val) : ''}</td>`).join('')}</tr>`)
-            .join('');
-        }
+      let data;
+      if (res.status === 401) {
+        data = {
+          response: 'Authentication Required (401): This structured data query requires an authorized API key.',
+          intent: 'DATA_QUERY',
+          tool_used: 'none',
+          status: 'error',
+        };
+      } else if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const err = await res.json();
+          if (err && err.detail) detail = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail);
+        } catch (_) {}
+        data = {
+          response: `Request failed: ${detail}`,
+          intent: 'ERROR',
+          tool_used: 'none',
+          status: 'error',
+        };
       } else {
-        if (workspaceResultTableBox) workspaceResultTableBox.style.display = 'none';
+        data = await res.json();
       }
 
-      // Render Chart
-      if (data.chart && data.chart.url) {
-        if (workspaceChartCard) workspaceChartCard.style.display = 'block';
-        if (workspaceChartTitle) workspaceChartTitle.textContent = data.chart.title || 'Generated Chart';
-        if (workspaceChartImg) workspaceChartImg.src = data.chart.url;
-        if (workspaceChartDownloadLink) {
-          workspaceChartDownloadLink.href = data.chart.url;
-          workspaceChartDownloadLink.download = data.chart.filename || 'chart.png';
-        }
-      } else {
-        if (workspaceChartCard) workspaceChartCard.style.display = 'none';
-      }
-
-      if (workspaceResultsCard) {
-        workspaceResultsCard.scrollIntoView({ behavior: 'smooth' });
-      }
+      const assistantTime = formatTime();
+      const assistantTurn = {
+        id: 'dt-a-' + Date.now(),
+        sender: 'assistant',
+        data: data,
+        userQuery: query,
+        timestamp: assistantTime,
+      };
+      activeDatasetTurns.push(assistantTurn);
+      saveDatasetTurns(activeDataset.dataset_id, activeDatasetTurns);
+      renderDatasetConversation(activeDatasetTurns);
     } catch (err) {
-      console.error('Workspace analysis error:', err);
-      showToast('Error executing dataset analysis.');
+      removeDatasetTypingIndicator();
+      const errTurn = {
+        id: 'dt-err-' + Date.now(),
+        sender: 'assistant',
+        data: {
+          response: `Network error: ${err.message || 'Unable to connect to analytics server'}`,
+          intent: 'NETWORK_ERROR',
+          tool_used: 'none',
+          status: 'error',
+        },
+        userQuery: query,
+        timestamp: formatTime(),
+      };
+      activeDatasetTurns.push(errTurn);
+      saveDatasetTurns(activeDataset.dataset_id, activeDatasetTurns);
+      renderDatasetConversation(activeDatasetTurns);
     } finally {
-      if (analyzeBtnText) analyzeBtnText.textContent = 'Analyze';
-      if (analyzeBtnSpinner) analyzeBtnSpinner.style.display = 'none';
-      if (workspaceAnalyzeBtn) workspaceAnalyzeBtn.disabled = false;
+      isDatasetLoading = false;
+      if (datasetSendBtn) datasetSendBtn.disabled = false;
+      if (datasetSendSpinner) datasetSendSpinner.style.display = 'none';
+      if (datasetSendBtnText) datasetSendBtnText.style.display = 'inline-block';
+      if (datasetChatInput) {
+        datasetChatInput.disabled = false;
+        datasetChatInput.focus();
+      }
+    }
+  }
+
+  function clearDatasetChat() {
+    if (!activeDataset) return;
+    activeDatasetTurns = [];
+    saveDatasetTurns(activeDataset.dataset_id, []);
+    renderDatasetConversation([]);
+    showToast('Dataset conversation cleared');
+  }
+
+  function runWorkspaceAnalysis(queryText) {
+    return runDatasetChat(queryText);
+  }
+
+  function showWorkspaceEmpty() {
+    activeDataset = null;
+    activeDatasetTurns = [];
+    if (workspaceEmptyState) workspaceEmptyState.style.display = 'flex';
+    if (workspaceContentCard) workspaceContentCard.style.display = 'none';
+    if (workspaceSwitchBtn) workspaceSwitchBtn.style.display = 'none';
+    if (toggleSchemaTableBtn) toggleSchemaTableBtn.style.display = 'none';
+    if (workspaceSchemaSection) workspaceSchemaSection.style.display = 'none';
+    if (workspaceActiveDatasetLabel) workspaceActiveDatasetLabel.textContent = 'No dataset selected';
+
+    // UI-2: Update Sidebar Dataset Context
+    if (sidebarDatasetActiveCard) sidebarDatasetActiveCard.style.display = 'none';
+    if (sidebarDatasetEmptyState) sidebarDatasetEmptyState.style.display = 'flex';
+
+    renderDatasetConversation([]);
+  }
+
+  function renderWorkspaceDataset(data) {
+    if (!data) return;
+    activeDataset = data;
+
+    if (workspaceActiveDatasetLabel) {
+      workspaceActiveDatasetLabel.textContent = `${data.filename} (${data.dataset_id.slice(0, 8)}...)`;
+    }
+    if (workspaceEmptyState) workspaceEmptyState.style.display = 'none';
+    if (workspaceContentCard) workspaceContentCard.style.display = 'flex';
+    if (workspaceSwitchBtn) workspaceSwitchBtn.style.display = 'inline-flex';
+    if (toggleSchemaTableBtn) toggleSchemaTableBtn.style.display = 'inline-flex';
+
+    if (profileFormatTag) profileFormatTag.textContent = (data.format || 'csv').toUpperCase();
+    if (profileRowsVal) profileRowsVal.textContent = (data.row_count || 0).toLocaleString();
+    if (profileColsVal) profileColsVal.textContent = (data.column_count || 0).toLocaleString();
+
+    const prof = data.profile || {};
+    if (profileMissingVal) profileMissingVal.textContent = (prof.missing_cells || 0).toLocaleString();
+    if (profileDupsVal) profileDupsVal.textContent = (prof.duplicate_rows || 0).toLocaleString();
+
+    if (workspaceColumnsTbody && prof.columns) {
+      workspaceColumnsTbody.innerHTML = '';
+      prof.columns.forEach((col) => {
+        const tr = document.createElement('tr');
+        const missingPct = ((col.missing_percentage || 0) * 100).toFixed(1);
+        tr.innerHTML = `
+          <td><strong>${escapeHtml(col.name)}</strong></td>
+          <td><span class="profile-format-tag">${escapeHtml(col.dtype)}</span></td>
+          <td><code>${escapeHtml(col.dtype)}</code></td>
+          <td>${col.missing_count || 0} (${missingPct}%)</td>
+          <td>${(col.unique_count || 0).toLocaleString()}</td>
+        `;
+        workspaceColumnsTbody.appendChild(tr);
+      });
+    }
+
+    // UI-2: Populate Sidebar Dataset Context Card & Columns List
+    if (sidebarDatasetActiveCard) sidebarDatasetActiveCard.style.display = 'flex';
+    if (sidebarDatasetEmptyState) sidebarDatasetEmptyState.style.display = 'none';
+    if (sidebarDatasetFilename) {
+      sidebarDatasetFilename.textContent = data.filename || 'dataset.csv';
+      sidebarDatasetFilename.title = data.filename || 'dataset.csv';
+    }
+    if (sidebarDatasetFormatTag) {
+      sidebarDatasetFormatTag.textContent = (data.format || 'csv').toUpperCase();
+    }
+    if (sidebarRowsVal) sidebarRowsVal.textContent = (data.row_count || 0).toLocaleString();
+    if (sidebarColsVal) sidebarColsVal.textContent = (data.column_count || 0).toLocaleString();
+    if (sidebarMissingVal) sidebarMissingVal.textContent = (prof.missing_cells || 0).toLocaleString();
+    if (sidebarDupsVal) sidebarDupsVal.textContent = (prof.duplicate_rows || 0).toLocaleString();
+
+    if (sidebarColsCount) {
+      sidebarColsCount.textContent = prof.columns ? prof.columns.length : (data.column_count || 0);
+    }
+
+    if (sidebarColumnsList && prof.columns) {
+      sidebarColumnsList.innerHTML = '';
+      prof.columns.forEach((col) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'sidebar-column-item';
+        item.setAttribute('title', `Ask about ${col.name}`);
+        item.setAttribute('aria-label', `Ask about column ${col.name}`);
+        item.innerHTML = `
+          <span class="s-col-name">${escapeHtml(col.name)}</span>
+          <span class="s-col-dtype">${escapeHtml(col.dtype)}</span>
+        `;
+        item.addEventListener('click', () => {
+          if (datasetChatInput) {
+            datasetChatInput.value = `Show summary and distribution of ${col.name}`;
+            datasetChatInput.focus();
+            showToast(`Added query template for ${col.name}`);
+          }
+        });
+        sidebarColumnsList.appendChild(item);
+      });
+    }
+
+    activeDatasetTurns = loadDatasetTurns(data.dataset_id);
+    renderDatasetConversation(activeDatasetTurns);
+  }
+
+  // UI-2: Unified Workspace Mode Switcher
+  function switchWorkspaceMode(mode) {
+    currentWorkspaceMode = mode === WORKSPACE_MODE_DATASET ? WORKSPACE_MODE_DATASET : WORKSPACE_MODE_SUPPORT;
+    try {
+      localStorage.setItem(STORAGE_KEY_WORKSPACE_MODE, currentWorkspaceMode);
+    } catch (_) {}
+
+    const isSupport = currentWorkspaceMode === WORKSPACE_MODE_SUPPORT;
+
+    // 1. Header segmented tab buttons
+    if (tabSupportModeBtn) {
+      tabSupportModeBtn.classList.toggle('active', isSupport);
+      tabSupportModeBtn.setAttribute('aria-selected', isSupport ? 'true' : 'false');
+    }
+    if (tabDatasetModeBtn) {
+      tabDatasetModeBtn.classList.toggle('active', !isSupport);
+      tabDatasetModeBtn.setAttribute('aria-selected', !isSupport ? 'true' : 'false');
+    }
+
+    // 2. Left sidebar panels
+    if (supportSidebarPanel) supportSidebarPanel.style.display = isSupport ? 'flex' : 'none';
+    if (datasetSidebarPanel) datasetSidebarPanel.style.display = isSupport ? 'none' : 'flex';
+
+    // 3. Center workspace views
+    if (chatMain) chatMain.style.display = isSupport ? 'flex' : 'none';
+    if (datasetWorkspaceView) datasetWorkspaceView.style.display = isSupport ? 'none' : 'flex';
+
+    // 4. Update Header New Chat / New Analysis button
+    if (newChatBtn) {
+      const labelSpan = newChatBtn.querySelector('span');
+      if (labelSpan) {
+        labelSpan.textContent = isSupport ? 'New Chat' : 'New Analysis';
+      }
+      newChatBtn.title = isSupport ? 'Start new support conversation' : 'Start fresh analytical query session';
+    }
+
+    // 5. If switching to dataset view, ensure dataset state or empty state is rendered
+    if (!isSupport) {
+      if (activeDataset) {
+        renderWorkspaceDataset(activeDataset);
+      } else {
+        showWorkspaceEmpty();
+      }
     }
   }
 
   function switchToWorkspaceView() {
-    if (chatMain) chatMain.style.display = 'none';
-    if (datasetWorkspaceView) datasetWorkspaceView.style.display = 'flex';
-    document.querySelectorAll('.nav-item').forEach((n) => n.classList.remove('active'));
-    if (navDatasetsBtn) navDatasetsBtn.classList.add('active');
-
-    if (activeDataset) {
-      renderWorkspaceDataset(activeDataset);
-    } else {
-      showWorkspaceEmpty();
-    }
+    switchWorkspaceMode(WORKSPACE_MODE_DATASET);
   }
 
   function switchToChatView() {
-    if (datasetWorkspaceView) datasetWorkspaceView.style.display = 'none';
-    if (chatMain) chatMain.style.display = 'flex';
-    const chatNavItem = document.querySelector('.nav-item[data-action="chat"]');
-    if (chatNavItem) chatNavItem.classList.add('active');
+    switchWorkspaceMode(WORKSPACE_MODE_SUPPORT);
   }
 
   function openChartModal(url, title = 'Chart View') {
     if (!chartExpandModal) return;
+    activeModalTriggerEl = document.activeElement;
     if (modalChartTitle) modalChartTitle.textContent = title;
     if (modalChartImg) modalChartImg.src = url;
     if (modalChartDownloadLink) {
@@ -819,12 +1476,14 @@
       modalChartDownloadLink.download = 'chart.png';
     }
     chartExpandModal.style.display = 'flex';
+    if (closeChartModalBtn) closeChartModalBtn.focus();
   }
 
   function closeChartModal() {
     if (!chartExpandModal) return;
     chartExpandModal.style.display = 'none';
     if (modalChartImg) modalChartImg.src = '';
+    restoreModalFocus();
   }
 
   // ==========================================================================
@@ -889,8 +1548,10 @@
 
   function promptDeleteThread(threadId) {
     pendingDeleteThreadId = threadId;
+    activeModalTriggerEl = document.activeElement;
     if (deleteConfirmModal) {
       deleteConfirmModal.style.display = 'flex';
+      if (cancelDeleteBtn) cancelDeleteBtn.focus();
     }
   }
 
@@ -921,6 +1582,7 @@
     if (deleteConfirmModal) {
       deleteConfirmModal.style.display = 'none';
     }
+    restoreModalFocus();
   }
 
   // ==========================================================================
@@ -951,10 +1613,39 @@
     if (!profileDropdown) return;
     const isVisible = profileDropdown.style.display === 'flex';
     profileDropdown.style.display = isVisible ? 'none' : 'flex';
+    if (userProfileBtn) userProfileBtn.setAttribute('aria-expanded', !isVisible ? 'true' : 'false');
   }
 
   function closeProfileDropdown() {
-    if (profileDropdown) profileDropdown.style.display = 'none';
+    if (profileDropdown) {
+      profileDropdown.style.display = 'none';
+      if (userProfileBtn) userProfileBtn.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  function toggleSettingsDrawer() {
+    if (!sidebarRight) return;
+    const isOpen = sidebarRight.classList.toggle('open');
+    if (toggleSettingsBtn) toggleSettingsBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+    if (isOpen) {
+      if (apiKeyInput) {
+        setTimeout(() => apiKeyInput.focus(), 100);
+      }
+    } else {
+      if (toggleSettingsBtn) toggleSettingsBtn.focus();
+    }
+  }
+
+  function closeSettingsDrawer(restoreFocus = false) {
+    if (sidebarRight && sidebarRight.classList.contains('open')) {
+      sidebarRight.classList.remove('open');
+      if (toggleSettingsBtn) {
+        toggleSettingsBtn.setAttribute('aria-expanded', 'false');
+        if (restoreFocus) {
+          try { toggleSettingsBtn.focus(); } catch (_) {}
+        }
+      }
+    }
   }
 
   // ==========================================================================
@@ -1390,11 +2081,50 @@
       }
     });
 
-    // New Chat
+    // New Chat / New Analysis
     newChatBtn.addEventListener('click', () => {
-      createNewThread();
-      showToast('Started new conversation');
+      if (currentWorkspaceMode === WORKSPACE_MODE_DATASET) {
+        if (!activeDataset) {
+          showToast('Please upload or select a dataset to begin analysis');
+          if (workspaceUploadFileInput) workspaceUploadFileInput.click();
+        } else {
+          clearDatasetChat();
+          if (datasetChatInput) {
+            datasetChatInput.value = '';
+            datasetChatInput.focus();
+          }
+          showToast(`Started new analysis for ${activeDataset.filename || 'active dataset'}`);
+        }
+      } else {
+        createNewThread();
+        showToast('Started new conversation');
+      }
     });
+
+    // UI-2: Mode Selector Segmented Buttons
+    if (tabSupportModeBtn) {
+      tabSupportModeBtn.addEventListener('click', () => {
+        switchWorkspaceMode(WORKSPACE_MODE_SUPPORT);
+      });
+    }
+    if (tabDatasetModeBtn) {
+      tabDatasetModeBtn.addEventListener('click', () => {
+        switchWorkspaceMode(WORKSPACE_MODE_DATASET);
+      });
+    }
+
+    // UI-2: Toggle Schema Table
+    if (toggleSchemaTableBtn) {
+      toggleSchemaTableBtn.addEventListener('click', () => {
+        if (!workspaceSchemaSection) return;
+        const isHidden = workspaceSchemaSection.style.display === 'none';
+        workspaceSchemaSection.style.display = isHidden ? 'block' : 'none';
+        toggleSchemaTableBtn.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+        if (toggleSchemaTableBtnText) {
+          toggleSchemaTableBtnText.textContent = isHidden ? 'Hide Schema' : 'Schema Table';
+        }
+      });
+    }
 
     // Chat Top Controls: Clear, Archive, Delete
     clearChatBtn.addEventListener('click', clearCurrentChat);
@@ -1417,6 +2147,7 @@
       const isVisible = archivedChatsList.style.display === 'flex';
       archivedChatsList.style.display = isVisible ? 'none' : 'flex';
       archivedToggleBtn.classList.toggle('open', !isVisible);
+      archivedToggleBtn.setAttribute('aria-expanded', !isVisible ? 'true' : 'false');
     });
 
     // Quick Prompts inside Welcome card
@@ -1503,6 +2234,8 @@
     if (workspaceUploadBtn) workspaceUploadBtn.addEventListener('click', triggerWorkspaceUpload);
     if (workspaceUploadTriggerBtn) workspaceUploadTriggerBtn.addEventListener('click', triggerWorkspaceUpload);
     if (workspaceSwitchBtn) workspaceSwitchBtn.addEventListener('click', triggerWorkspaceUpload);
+    if (sidebarDatasetUploadBtn) sidebarDatasetUploadBtn.addEventListener('click', triggerWorkspaceUpload);
+    if (sidebarSwitchDatasetBtn) sidebarSwitchDatasetBtn.addEventListener('click', triggerWorkspaceUpload);
     if (workspaceUploadFileInput) {
       workspaceUploadFileInput.addEventListener('change', (e) => {
         if (e.target.files && e.target.files[0]) {
@@ -1531,10 +2264,58 @@
         const q = chip.getAttribute('data-query');
         if (q) {
           if (workspaceQueryInput) workspaceQueryInput.value = q;
+          if (datasetChatInput) datasetChatInput.value = q;
           runWorkspaceAnalysis(q);
         }
       });
     });
+
+    // UI-1: Dataset Intelligence Conversational Architecture Listeners
+    if (datasetChatForm) {
+      datasetChatForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        runDatasetChat();
+      });
+    }
+    if (datasetChatInput) {
+      datasetChatInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          runDatasetChat();
+        }
+      });
+    }
+    if (clearDatasetChatBtn) {
+      clearDatasetChatBtn.addEventListener('click', clearDatasetChat);
+    }
+    document.querySelectorAll('.dataset-chip-action').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        const q = chip.getAttribute('data-query');
+        if (q) {
+          if (datasetChatInput) datasetChatInput.value = q;
+          runDatasetChat(q);
+        }
+      });
+    });
+
+    // UI-1: Full Result Table Modal Listeners
+    if (modalTableSearchInput) {
+      modalTableSearchInput.addEventListener('input', filterModalTable);
+    }
+    if (modalTableExportBtn) {
+      modalTableExportBtn.addEventListener('click', () => {
+        if (activeModalTableData && activeModalTableData.columns) {
+          exportTableToCsv(activeModalTableData.columns, activeModalTableData.rows, 'dataset_results.csv');
+        }
+      });
+    }
+    if (closeTableModalBtn) closeTableModalBtn.addEventListener('click', closeTableModal);
+    if (closeTableModalBottomBtn) closeTableModalBottomBtn.addEventListener('click', closeTableModal);
+    if (tableExpandModal) {
+      tableExpandModal.addEventListener('click', (e) => {
+        if (e.target === tableExpandModal) closeTableModal();
+      });
+    }
 
     // Chart Fullscreen Modal
     if (workspaceChartExpandBtn) {
@@ -1546,6 +2327,11 @@
     }
     if (closeChartModalBtn) closeChartModalBtn.addEventListener('click', closeChartModal);
     if (closeChartModalBottomBtn) closeChartModalBottomBtn.addEventListener('click', closeChartModal);
+    if (chartExpandModal) {
+      chartExpandModal.addEventListener('click', (e) => {
+        if (e.target === chartExpandModal) closeChartModal();
+      });
+    }
 
     // Profile Dropdown Toggle & Selection
     userProfileBtn.addEventListener('click', (e) => {
@@ -1581,17 +2367,40 @@
     toggleKeyVisibilityBtn.addEventListener('click', toggleKeyVisibility);
 
     if (toggleSettingsBtn && sidebarRight) {
-      toggleSettingsBtn.addEventListener('click', () => {
-        sidebarRight.classList.toggle('open');
+      toggleSettingsBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleSettingsDrawer();
       });
     }
 
-    // Escape key closes modals
+    if (closeSettingsBtn) {
+      closeSettingsBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeSettingsDrawer(true);
+      });
+    }
+
+    // Outside click closes Settings drawer
+    document.addEventListener('click', (e) => {
+      if (
+        sidebarRight &&
+        sidebarRight.classList.contains('open') &&
+        !sidebarRight.contains(e.target) &&
+        toggleSettingsBtn &&
+        !toggleSettingsBtn.contains(e.target)
+      ) {
+        closeSettingsDrawer(false);
+      }
+    });
+
+    // Escape key closes modals and transient drawers
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         closeDeleteModal();
         closeProfileDropdown();
         closeChartModal();
+        closeTableModal();
+        closeSettingsDrawer(true);
       }
     });
   }
@@ -1614,6 +2423,10 @@
     } else {
       createNewThread();
     }
+
+    // UI-2: Restore Active Workspace Mode
+    const savedMode = localStorage.getItem(STORAGE_KEY_WORKSPACE_MODE) || WORKSPACE_MODE_SUPPORT;
+    switchWorkspaceMode(savedMode);
 
     initEventListeners();
   }

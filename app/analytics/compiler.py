@@ -747,13 +747,38 @@ def compile_plan(plan: AnalysisPlan, metadata: DatasetMetadata) -> CompiledQuery
 
     # 5. Validate and Compile OrderBy
     if plan.order_by:
+        col_to_alias: dict[str, str] = {}
+        for agg in plan.aggregations:
+            alias = agg.alias or (f"{agg.function.value}_{agg.column}" if agg.column else "count_rows")
+            if agg.column:
+                col_to_alias[agg.column] = alias
+                col_to_alias[agg.column.lower()] = alias
+            col_to_alias[alias] = alias
+            col_to_alias[alias.lower()] = alias
+
+        for gb in plan.group_by:
+            col_to_alias[gb.column] = gb.column
+            col_to_alias[gb.column.lower()] = gb.column
+
         order_parts = []
         for o in plan.order_by:
-            if o.target not in available_sort_targets:
-                raise PlanValidationError(
-                    f"Order by target '{o.target}' is not in selected projection or aliases. Available: {sorted(available_sort_targets)}."
-                )
-            target_ident = escape_identifier(o.target)
+            target = o.target
+            resolved_target = None
+            if target in available_sort_targets:
+                resolved_target = target
+            elif target in col_to_alias and col_to_alias[target] in available_sort_targets:
+                resolved_target = col_to_alias[target]
+            elif target.lower() in col_to_alias and col_to_alias[target.lower()] in available_sort_targets:
+                resolved_target = col_to_alias[target.lower()]
+            else:
+                matched = next((ast for ast in available_sort_targets if ast.lower() == target.lower()), None)
+                if matched:
+                    resolved_target = matched
+                else:
+                    raise PlanValidationError(
+                        f"Order by target '{o.target}' is not in selected projection or aliases. Available: {sorted(available_sort_targets)}."
+                    )
+            target_ident = escape_identifier(resolved_target)
             direction = "DESC" if o.descending else "ASC"
             order_parts.append(f"{target_ident} {direction} NULLS LAST")
         sql_parts.append(f"ORDER BY {', '.join(order_parts)}")

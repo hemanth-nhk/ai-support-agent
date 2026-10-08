@@ -38,7 +38,11 @@ def _sanitize_record_value(val: Any) -> Any:
         return val.isoformat()
     if hasattr(val, "item"):
         # numpy scalar to python scalar
-        return val.item()
+        val = val.item()
+    if isinstance(val, float):
+        # Round floating-point precision artifacts (e.g. 3908.8700000000003 -> 3908.87)
+        # while preserving numeric float type for deterministic processing/export
+        return round(val, 4)
     return val
 
 

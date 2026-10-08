@@ -96,6 +96,18 @@ class FilterClause(BaseModel):
         default=None, description="Literal value, range, or list of values for filtering"
     )
 
+    @field_validator("value", mode="before")
+    @classmethod
+    def strip_outer_quotes(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v_str = v.strip()
+            if len(v_str) >= 2 and (
+                (v_str.startswith("'") and v_str.endswith("'"))
+                or (v_str.startswith('"') and v_str.endswith('"'))
+            ):
+                return v_str[1:-1].strip()
+        return v
+
 
 class AggregationClause(BaseModel):
     model_config = ConfigDict(extra="forbid")

@@ -25,6 +25,26 @@
         </div>
       </div>
 
+      <!-- UI-2: Top-Level Workspace Mode Switcher -->
+      <div class="nav-center">
+        <div class="workspace-mode-selector" id="workspaceModeSelector" role="tablist" aria-label="Workspace Mode">
+          <button type="button" class="mode-tab-btn active" id="tabSupportModeBtn" role="tab" aria-selected="true" data-mode="support">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+            <span>Support &amp; Policies</span>
+          </button>
+          <button type="button" class="mode-tab-btn" id="tabDatasetModeBtn" role="tab" aria-selected="false" data-mode="dataset">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="20" x2="18" y2="10"></line>
+              <line x1="12" y1="20" x2="12" y2="4"></line>
+              <line x1="6" y1="20" x2="6" y2="14"></line>
+            </svg>
+            <span>Dataset Intelligence</span>
+          </button>
+        </div>
+      </div>
+
       <div class="nav-right">
         <button id="themeToggleQuickBtn" class="nav-btn icon-only" title="Toggle theme" aria-label="Toggle theme">
           <svg class="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -43,7 +63,7 @@
           </svg>
         </button>
 
-        <button id="newChatBtn" class="nav-btn btn-pill-outline" title="Start new conversation">
+        <button id="newChatBtn" class="nav-btn btn-pill-outline" title="Start new conversation" aria-label="Start new conversation">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="12" y1="5" x2="12" y2="19"></line>
             <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -51,7 +71,7 @@
           <span>New Chat</span>
         </button>
 
-        <button id="toggleSettingsBtn" class="nav-btn icon-only active-accent" title="Settings" aria-label="Toggle settings">
+        <button id="toggleSettingsBtn" class="nav-btn icon-only active-accent" title="Settings" aria-label="Toggle settings" aria-expanded="false" aria-controls="sidebarRight">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"></circle>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -60,7 +80,7 @@
 
         <!-- Interactive Demo Profile Dropdown Trigger -->
         <div class="profile-menu-container">
-          <button id="userProfileBtn" class="user-badge" title="Demo Customer Context (Testing only)">
+          <button id="userProfileBtn" class="user-badge" title="Demo Customer Context (Testing only)" aria-label="Demo Customer Context" aria-haspopup="true" aria-expanded="false" aria-controls="profileDropdown">
             <span class="user-initial" id="profileBadgeInitial">A</span>
             <span class="profile-badge-name" id="profileBadgeName">Alice</span>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -112,93 +132,170 @@
     <div class="main-body">
       <!-- 1. Left Sidebar -->
       <aside class="sidebar-left">
-        <!-- Navigation Menu -->
-        <nav class="sidebar-nav">
-          <button class="nav-item active" data-action="chat">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-            </svg>
-            <span>Chat</span>
-          </button>
-          <button class="nav-item" data-action="datasets" id="navDatasetsBtn">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="20" x2="18" y2="10"></line>
-              <line x1="12" y1="20" x2="12" y2="4"></line>
-              <line x1="6" y1="20" x2="6" y2="14"></line>
-            </svg>
-            <span>Datasets & Analytics</span>
-          </button>
-          <button class="nav-item" data-action="order-tracking">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="1" y="3" width="15" height="13"></rect>
-              <polygon points="16 8 20 8 23 11 23 16 16 16 8"></polygon>
-              <circle cx="5.5" cy="18.5" r="2.5"></circle>
-              <circle cx="18.5" cy="18.5" r="2.5"></circle>
-            </svg>
-            <span>Order Tracking</span>
-          </button>
-          <button class="nav-item" data-action="returns">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="16.5 9.4 7.55 4.24"></polyline>
-              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-              <polyline points="3.29 7 12 12.01 20.71 7"></polyline>
-              <line x1="12" y1="22.08" x2="12" y2="12"></line>
-            </svg>
-            <span>Returns & Refunds</span>
-          </button>
-          <button class="nav-item" data-action="products">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-3z"></path>
-              <line x1="3" y1="6" x2="21" y2="6"></line>
-              <path d="M16 10a4 4 0 0 1-8 0"></path>
-            </svg>
-            <span>Browse Products</span>
-          </button>
-          <button class="nav-item" data-action="faq">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"></circle>
-              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
-              <line x1="12" y1="17" x2="12.01" y2="17"></line>
-            </svg>
-            <span>Help & FAQ</span>
-          </button>
-        </nav>
-
-        <!-- Dynamic Recent Chats Section -->
-        <div class="recent-chats-container">
-          <div class="sidebar-section-header">
-            <span class="sidebar-section-title">Recent Chats</span>
-          </div>
-          <div class="recent-chats-list" id="recentChatsList">
-            <!-- Dynamically populated by app.js -->
-          </div>
-
-          <!-- Collapsible Archived Section -->
-          <div class="archived-section" id="archivedSection">
-            <button class="archived-toggle-btn" id="archivedToggleBtn">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="21 8 21 21 3 21 3 8"></polyline>
-                <rect x="1" y="3" width="22" height="5"></rect>
-                <line x1="10" y1="12" x2="14" y2="12"></line>
+        <!-- UI-2: Support & Policies Sidebar Panel -->
+        <div class="sidebar-panel" id="supportSidebarPanel">
+          <!-- Navigation Menu -->
+          <nav class="sidebar-nav">
+            <button class="nav-item active" data-action="chat" aria-label="Support Chat">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
               </svg>
-              <span>Archived (<span id="archivedCountText">0</span>)</span>
-              <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
+              <span>Chat</span>
             </button>
-            <div class="archived-chats-list" id="archivedChatsList" style="display: none;">
+            <button class="nav-item" data-action="order-tracking" aria-label="Order Tracking shortcut">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="1" y="3" width="15" height="13"></rect>
+                <polygon points="16 8 20 8 23 11 23 16 16 8"></polygon>
+                <circle cx="5.5" cy="18.5" r="2.5"></circle>
+                <circle cx="18.5" cy="18.5" r="2.5"></circle>
+              </svg>
+              <span>Order Tracking</span>
+            </button>
+            <button class="nav-item" data-action="returns" aria-label="Returns and Refunds shortcut">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="16.5 9.4 7.55 4.24"></polyline>
+                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                <polyline points="3.29 7 12 12.01 20.71 7"></polyline>
+                <line x1="12" y1="22.08" x2="12" y2="12"></line>
+              </svg>
+              <span>Returns &amp; Refunds</span>
+            </button>
+            <button class="nav-item" data-action="products" aria-label="Browse Products shortcut">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-3z"></path>
+                <line x1="3" y1="6" x2="21" y2="6"></line>
+                <path d="M16 10a4 4 0 0 1-8 0"></path>
+              </svg>
+              <span>Browse Products</span>
+            </button>
+            <button class="nav-item" data-action="faq" aria-label="Help and FAQ shortcut">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+              </svg>
+              <span>Help &amp; FAQ</span>
+            </button>
+          </nav>
+
+          <!-- Dynamic Recent Chats Section -->
+          <div class="recent-chats-container">
+            <div class="sidebar-section-header">
+              <span class="sidebar-section-title">Recent Chats</span>
+            </div>
+            <div class="recent-chats-list" id="recentChatsList">
               <!-- Dynamically populated by app.js -->
+            </div>
+
+            <!-- Collapsible Archived Section -->
+            <div class="archived-section" id="archivedSection">
+              <button class="archived-toggle-btn" id="archivedToggleBtn" aria-label="Toggle archived conversations" aria-expanded="false" aria-controls="archivedChatsList">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="21 8 21 21 3 21 3 8"></polyline>
+                  <rect x="1" y="3" width="22" height="5"></rect>
+                  <line x1="10" y1="12" x2="14" y2="12"></line>
+                </svg>
+                <span>Archived (<span id="archivedCountText">0</span>)</span>
+                <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </button>
+              <div class="archived-chats-list" id="archivedChatsList" style="display: none;">
+                <!-- Dynamically populated by app.js -->
+              </div>
+            </div>
+          </div>
+
+          <!-- Session Status Footer in Sidebar -->
+          <div class="sidebar-footer">
+            <div class="session-card">
+              <span class="session-pulse-dot"></span>
+              <div class="session-details">
+                <span class="session-title">Support Session</span>
+                <span class="session-uuid" id="sessionUuidText">c7c7c7f5-...</span>
+              </div>
             </div>
           </div>
         </div>
 
-        <!-- Session Status Footer in Sidebar -->
-        <div class="sidebar-footer">
-          <div class="session-card">
-            <span class="session-pulse-dot"></span>
-            <div class="session-details">
-              <span class="session-title">Session Active</span>
-              <span class="session-uuid" id="sessionUuidText">c7c7c7f5-...</span>
+        <!-- UI-2: Dataset Intelligence Sidebar Panel -->
+        <div class="sidebar-panel" id="datasetSidebarPanel" style="display: none;">
+          <div class="sidebar-section-header">
+            <span class="sidebar-section-title">Dataset Context</span>
+          </div>
+
+          <div class="sidebar-dataset-actions">
+            <button type="button" class="btn-sidebar-upload" id="sidebarDatasetUploadBtn" title="Upload dataset" aria-label="Upload dataset">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
+              </svg>
+              <span>Upload Dataset</span>
+            </button>
+          </div>
+
+          <!-- Empty Dataset State in Sidebar -->
+          <div class="sidebar-dataset-empty" id="sidebarDatasetEmptyState">
+            <div class="sidebar-dataset-empty-icon">📁</div>
+            <p class="sidebar-dataset-empty-text">No active dataset selected. Upload CSV, XLSX, or JSON to begin.</p>
+          </div>
+
+          <!-- Active Dataset Context Card in Sidebar -->
+          <div class="sidebar-dataset-card" id="sidebarDatasetActiveCard" style="display: none;">
+            <div class="sidebar-dataset-card-header">
+              <div class="sidebar-dataset-title-box">
+                <span class="sidebar-dataset-filename" id="sidebarDatasetFilename">dataset.csv</span>
+                <span class="sidebar-dataset-tag" id="sidebarDatasetFormatTag">CSV</span>
+              </div>
+              <button type="button" class="sidebar-icon-btn" id="sidebarSwitchDatasetBtn" title="Switch Dataset" aria-label="Switch active dataset">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="1 4 1 10 7 10"></polyline>
+                  <polyline points="23 20 23 14 17 14"></polyline>
+                  <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"></path>
+                </svg>
+              </button>
+            </div>
+
+            <!-- Quick Metrics Grid -->
+            <div class="sidebar-metrics-grid">
+              <div class="sidebar-metric-item">
+                <span class="s-metric-val" id="sidebarRowsVal">0</span>
+                <span class="s-metric-lbl">Rows</span>
+              </div>
+              <div class="sidebar-metric-item">
+                <span class="s-metric-val" id="sidebarColsVal">0</span>
+                <span class="s-metric-lbl">Cols</span>
+              </div>
+              <div class="sidebar-metric-item">
+                <span class="s-metric-val" id="sidebarMissingVal">0</span>
+                <span class="s-metric-lbl">Missing</span>
+              </div>
+              <div class="sidebar-metric-item">
+                <span class="s-metric-val" id="sidebarDupsVal">0</span>
+                <span class="s-metric-lbl">Dups</span>
+              </div>
+            </div>
+
+            <!-- Column Schema List -->
+            <div class="sidebar-columns-section">
+              <div class="sidebar-columns-header">
+                <span>Columns (<span id="sidebarColsCount">0</span>)</span>
+              </div>
+              <div class="sidebar-columns-list" id="sidebarColumnsList">
+                <!-- Dynamically populated -->
+              </div>
+            </div>
+          </div>
+
+          <!-- Analytical Session Footer in Sidebar -->
+          <div class="sidebar-footer">
+            <div class="session-card">
+              <span class="session-pulse-dot" style="background: #38bdf8;"></span>
+              <div class="session-details">
+                <span class="session-title">Analytics Memory</span>
+                <span class="session-uuid" id="datasetSessionUuidText">Phase 8 Active</span>
+              </div>
             </div>
           </div>
         </div>
@@ -212,14 +309,14 @@
             <span class="thread-title-text" id="activeThreadTitle">New Conversation</span>
           </div>
           <div class="thread-actions">
-            <button id="clearChatBtn" class="thread-action-btn" title="Clear Chat & Start Fresh Session">
+            <button id="clearChatBtn" class="thread-action-btn" title="Clear Chat & Start Fresh Session" aria-label="Clear chat session">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M3 6h18"></path>
                 <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
               </svg>
               <span>Clear Chat</span>
             </button>
-            <button id="archiveChatBtn" class="thread-action-btn" title="Archive Conversation">
+            <button id="archiveChatBtn" class="thread-action-btn" title="Archive Conversation" aria-label="Archive conversation">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="21 8 21 21 3 21 3 8"></polyline>
                 <rect x="1" y="3" width="22" height="5"></rect>
@@ -227,7 +324,7 @@
               </svg>
               <span>Archive</span>
             </button>
-            <button id="deleteChatBtn" class="thread-action-btn btn-danger" title="Delete Conversation Permanently">
+            <button id="deleteChatBtn" class="thread-action-btn btn-danger" title="Delete Conversation Permanently" aria-label="Delete conversation">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="18" y1="6" x2="6" y2="18"></line>
                 <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -412,24 +509,24 @@
             <div class="composer-toolbar">
               <div class="toolbar-left">
                 <!-- Functional Document Attachment Button -->
-                <button type="button" id="attachDocBtn" class="toolbar-btn" title="Attach document (PDF, DOCX, TXT)">
+                <button type="button" id="attachDocBtn" class="toolbar-btn" title="Attach document (PDF, DOCX, TXT)" aria-label="Attach document (PDF, DOCX, TXT)">
                   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
                   </svg>
                 </button>
-                <!-- Functional Dataset Attachment Button -->
-                <button type="button" id="attachDatasetBtn" class="toolbar-btn" title="Attach dataset (CSV, XLSX, JSON)">
+                <!-- Functional Dataset Attachment Button (Scoped to Dataset Intelligence only) -->
+                <button type="button" id="attachDatasetBtn" class="toolbar-btn" title="Attach dataset (CSV, XLSX, JSON)" aria-label="Attach dataset" style="display: none;">
                   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <line x1="18" y1="20" x2="18" y2="10"></line>
                     <line x1="12" y1="20" x2="12" y2="4"></line>
                     <line x1="6" y1="20" x2="6" y2="14"></line>
                   </svg>
                 </button>
-                <span class="toolbar-hint">Ask about orders, returns, products, documents, or datasets...</span>
+                <span class="toolbar-hint">Ask about orders, returns, products, or attached documents...</span>
               </div>
 
               <div class="toolbar-right">
-                <button type="submit" id="sendBtn" class="send-action-btn" title="Send message" aria-label="Send">
+                <button type="submit" id="sendBtn" class="send-action-btn" title="Send message" aria-label="Send message">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
                   </svg>
@@ -468,7 +565,7 @@
                 accept=".csv,.xlsx,.json,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/json"
                 style="display: none;"
               />
-              <button type="button" id="workspaceUploadBtn" class="nav-btn btn-pill-accent">
+              <button type="button" id="workspaceUploadBtn" class="nav-btn btn-pill-accent" aria-label="Upload Dataset">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                   <polyline points="17 8 12 3 7 8"></polyline>
@@ -476,7 +573,15 @@
                 </svg>
                 <span>Upload Dataset</span>
               </button>
-              <button type="button" id="workspaceSwitchBtn" class="nav-btn btn-pill-outline" style="display: none;">
+              <button type="button" id="toggleSchemaTableBtn" class="nav-btn btn-pill-outline" style="display: none;" title="Toggle detailed schema table" aria-label="Toggle detailed schema table" aria-expanded="false" aria-controls="workspaceSchemaSection">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 3h18v18H3z"></path>
+                  <path d="M3 9h18"></path>
+                  <path d="M9 21V9"></path>
+                </svg>
+                <span id="toggleSchemaTableBtnText">Schema Table</span>
+              </button>
+              <button type="button" id="workspaceSwitchBtn" class="nav-btn btn-pill-outline" style="display: none;" aria-label="Switch Dataset">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="1 4 1 10 7 10"></polyline>
                   <polyline points="23 20 23 14 17 14"></polyline>
@@ -500,15 +605,15 @@
             </div>
             <h3>No Dataset Uploaded</h3>
             <p>Upload a CSV, XLSX, or JSON file to profile columns, compute metrics, and run deterministic visualizations.</p>
-            <button type="button" id="workspaceUploadTriggerBtn" class="btn-pill-accent">
+            <button type="button" id="workspaceUploadTriggerBtn" class="btn-pill-accent" aria-label="Choose file to analyze">
               Choose File to Analyze
             </button>
           </div>
 
           <!-- Dataset Content Container -->
           <div class="workspace-content-card" id="workspaceContentCard" style="display: none;">
-            <!-- 1. Profile Inspector -->
-            <div class="section-card">
+            <!-- 1. Profile Inspector (Collapsible via Schema Table toggle) -->
+            <div class="section-card workspace-schema-section" id="workspaceSchemaSection" style="display: none;">
               <div class="section-card-header">
                 <h3 class="section-card-title">Dataset Profile</h3>
                 <span class="profile-format-tag" id="profileFormatTag">CSV</span>
@@ -556,90 +661,73 @@
               </div>
             </div>
 
-            <!-- 2. Query Console -->
-            <div class="section-card">
-              <div class="section-card-header">
-                <h3 class="section-card-title">Ask Your Dataset</h3>
-              </div>
-              <p class="section-desc">Ask questions in plain English. The agent compiles an AnalysisPlan and runs deterministic DuckDB queries with server-rendered charts.</p>
-
-              <div class="query-box-wrap">
-                <textarea
-                  id="workspaceQueryInput"
-                  class="workspace-query-input"
-                  placeholder="e.g. Which region generated the highest revenue? Or show a bar chart of sales by department..."
-                  rows="2"
-                ></textarea>
-                <div class="query-actions-row">
-                  <div class="quick-chips-wrap">
-                    <button type="button" class="query-chip" data-query="Which region had the highest total revenue?">Top by Revenue</button>
-                    <button type="button" class="query-chip" data-query="Show a bar chart of revenue by category">Revenue Bar Chart</button>
-                    <button type="button" class="query-chip" data-query="Show distribution of order amounts">Distribution Histogram</button>
+            <!-- 2. Dataset Intelligence Conversational Architecture (UI-1) -->
+            <div class="section-card dataset-intelligence-card" id="datasetIntelligenceCard">
+              <div class="section-card-header dataset-chat-header">
+                <div class="dataset-chat-title-wrap">
+                  <div class="dataset-intel-icon">⚡</div>
+                  <div>
+                    <h3 class="section-card-title">Dataset Intelligence</h3>
+                    <p class="section-desc-compact">Interactive conversational analytics • Multi-turn analytical memory</p>
                   </div>
-                  <button type="button" id="workspaceAnalyzeBtn" class="btn-analyze">
-                    <span id="analyzeBtnText">Analyze</span>
-                    <span id="analyzeBtnSpinner" class="spinner-small" style="display: none;"></span>
+                </div>
+                <div class="dataset-chat-header-actions">
+                  <button type="button" id="clearDatasetChatBtn" class="btn-micro" title="Start fresh analytical conversation for this dataset" aria-label="Clear analytical conversation">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="3 6 5 6 21 6"></polyline>
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                    </svg>
+                    <span>Clear Chat</span>
                   </button>
                 </div>
               </div>
-            </div>
 
-            <!-- 3. Results Section (Finding + Result Table + Chart) -->
-            <div class="section-card results-section-card" id="workspaceResultsCard" style="display: none;">
-              <div class="section-card-header">
-                <h3 class="section-card-title">Analytical Findings</h3>
-                <span class="badge-intent-ok" id="workspaceResultBadge">DATASET_ANALYSIS</span>
-              </div>
-
-              <!-- Plain English Grounded Finding -->
-              <div class="finding-bubble" id="workspaceFindingText">
-                <!-- Verified finding -->
-              </div>
-
-              <!-- Result Table -->
-              <div class="result-table-box" id="workspaceResultTableBox" style="display: none;">
-                <div class="result-table-head-info">
-                  <span class="table-title">Query Result Data</span>
-                  <span class="table-count-tag" id="workspaceTableCountTag">0 rows</span>
-                </div>
-                <div class="table-scroll-wrap">
-                  <table class="analysis-result-table" id="workspaceResultTable">
-                    <thead id="workspaceResultThead"></thead>
-                    <tbody id="workspaceResultTbody"></tbody>
-                  </table>
-                </div>
-              </div>
-
-              <!-- Generated Chart Card -->
-              <div class="workspace-chart-card" id="workspaceChartCard" style="display: none;">
-                <div class="chart-header-row">
-                  <div class="chart-title-wrap">
-                    <span class="chart-title-icon">📊</span>
-                    <span class="chart-title-text" id="workspaceChartTitle">Chart</span>
+              <!-- Conversation Turns Container -->
+              <div class="dataset-chat-scroll-area" id="datasetChatScrollArea">
+                <!-- Empty Welcome Prompt -->
+                <div class="dataset-chat-empty" id="datasetChatEmptyState">
+                  <div class="intel-empty-icon">📊</div>
+                  <h4>Ask Questions in Plain English</h4>
+                  <p>Inquire about metrics, top/bottom rankings, distributions, or period comparisons. The assistant compiles a deterministic AnalysisPlan and runs DuckDB queries.</p>
+                  <div class="quick-chips-wrap dataset-intel-chips">
+                    <button type="button" class="query-chip dataset-chip-action" data-query="What is total sales by city?">Total Sales by City</button>
+                    <button type="button" class="query-chip dataset-chip-action" data-query="Show me the top 5 products by sales.">Top 5 Products</button>
+                    <button type="button" class="query-chip dataset-chip-action" data-query="Show a bar chart of sales by category">Sales Bar Chart</button>
+                    <button type="button" class="query-chip dataset-chip-action" data-query="Show distribution of order amounts">Distribution Histogram</button>
                   </div>
-                  <div class="chart-actions">
-                    <button type="button" id="workspaceChartExpandBtn" class="chart-action-btn" title="Expand Fullscreen">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="15 3 21 3 21 9"></polyline>
-                        <polyline points="9 21 3 21 3 15"></polyline>
-                        <line x1="21" y1="3" x2="14" y2="10"></line>
-                        <line x1="3" y1="21" x2="10" y2="14"></line>
-                      </svg>
-                      <span>Expand</span>
+                </div>
+
+                <!-- Live Message Turns List -->
+                <div class="dataset-chat-turns" id="datasetChatTurns" style="display: none;">
+                  <!-- Dynamically populated turns -->
+                </div>
+              </div>
+
+              <!-- Persistent Chat Composer -->
+              <div class="dataset-composer-wrap">
+                <div class="quick-chips-wrap dataset-composer-chips" id="datasetComposerChips">
+                  <button type="button" class="query-chip dataset-chip-action" data-query="Show me the top 5 products by sales.">Top 5 Products</button>
+                  <button type="button" class="query-chip dataset-chip-action" data-query="Sort descending">Sort DESC</button>
+                  <button type="button" class="query-chip dataset-chip-action" data-query="Plot this as a bar chart">Bar Chart</button>
+                </div>
+                <form id="datasetChatForm" class="dataset-composer-form">
+                  <div class="dataset-input-container">
+                    <textarea
+                      id="datasetChatInput"
+                      class="dataset-chat-input"
+                      placeholder="Ask a question about this dataset... (e.g. Show me the top 5 products by sales, filter that to Mumbai...)"
+                      rows="2"
+                    ></textarea>
+                    <button type="submit" id="datasetSendBtn" class="dataset-send-btn" title="Run analytical query" aria-label="Run analytical query">
+                      <span id="datasetSendBtnText">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
+                        </svg>
+                      </span>
+                      <span id="datasetSendSpinner" class="spinner-small" style="display: none;"></span>
                     </button>
-                    <a id="workspaceChartDownloadLink" class="chart-action-btn" download="chart.png" title="Download PNG">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                        <polyline points="7 10 12 15 17 10"></polyline>
-                        <line x1="12" y1="15" x2="12" y2="3"></line>
-                      </svg>
-                      <span>Download</span>
-                    </a>
                   </div>
-                </div>
-                <div class="chart-image-wrap">
-                  <img id="workspaceChartImg" src="" alt="Analytical Chart" class="chart-img-fluid" />
-                </div>
+                </form>
               </div>
             </div>
           </div>
@@ -650,11 +738,19 @@
       <aside class="sidebar-right" id="sidebarRight">
         <div class="settings-container-panel">
           <div class="panel-section-header">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="3"></circle>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-            </svg>
-            <span class="section-title">Settings</span>
+            <div class="panel-title-wrap">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+              </svg>
+              <span class="section-title">Settings</span>
+            </div>
+            <button type="button" class="drawer-close-btn" id="closeSettingsBtn" title="Close Settings" aria-label="Close Settings">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
           </div>
 
           <!-- Support API Key block -->
@@ -671,7 +767,7 @@
                 placeholder="Enter API key"
                 autocomplete="off"
               />
-              <button type="button" id="toggleKeyVisibilityBtn" class="visibility-btn" title="Toggle visibility">
+              <button type="button" id="toggleKeyVisibilityBtn" class="visibility-btn" title="Toggle visibility" aria-label="Toggle API key visibility">
                 <svg id="eyeIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
                   <circle cx="12" cy="12" r="3"></circle>
@@ -686,7 +782,7 @@
                 </svg>
                 <span id="apiKeyStatusText">API key saved</span>
               </div>
-              <button type="button" id="saveApiKeyBtn" class="btn-save-key">Save Key</button>
+              <button type="button" id="saveApiKeyBtn" class="btn-save-key" aria-label="Save API key">Save Key</button>
             </div>
           </div>
         </div>
@@ -704,8 +800,8 @@
         <p>Are you sure you want to permanently delete this conversation? This action cannot be undone.</p>
       </div>
       <div class="dialog-footer">
-        <button id="cancelDeleteBtn" class="btn btn-secondary">Cancel</button>
-        <button id="confirmDeleteBtn" class="btn btn-danger">Delete</button>
+        <button id="cancelDeleteBtn" class="btn btn-secondary" aria-label="Cancel deletion">Cancel</button>
+        <button id="confirmDeleteBtn" class="btn btn-danger" aria-label="Confirm permanent deletion">Delete</button>
       </div>
     </div>
   </div>
@@ -715,14 +811,59 @@
     <div class="modal-card-dialog modal-chart-dialog">
       <div class="dialog-header">
         <h3 class="dialog-title" id="modalChartTitle">Chart View</h3>
-        <button type="button" id="closeChartModalBtn" class="modal-close-btn">&times;</button>
+        <button type="button" id="closeChartModalBtn" class="modal-close-btn" aria-label="Close chart modal">&times;</button>
       </div>
       <div class="dialog-body chart-modal-body">
         <img id="modalChartImg" src="" alt="Expanded Chart" class="chart-modal-img" />
       </div>
       <div class="dialog-footer">
         <a id="modalChartDownloadLink" class="btn btn-secondary" download="chart.png">Download PNG</a>
-        <button id="closeChartModalBottomBtn" class="btn btn-primary">Close</button>
+        <button id="closeChartModalBottomBtn" class="btn btn-primary" aria-label="Close chart modal">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Full Result Table Modal (UI-1) -->
+  <div class="modal-backdrop" id="tableExpandModal" style="display: none;">
+    <div class="modal-card-dialog modal-table-dialog">
+      <div class="dialog-header">
+        <div class="dialog-title-wrap">
+          <span class="dialog-icon">📋</span>
+          <h3 class="dialog-title" id="modalTableTitle">Query Result Data</h3>
+          <span class="badge-count" id="modalTableRowCount">0 rows</span>
+        </div>
+        <div class="dialog-header-actions">
+          <button type="button" id="modalTableExportBtn" class="btn btn-secondary btn-sm" title="Export raw CSV data" aria-label="Export raw CSV data">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            <span>Export CSV</span>
+          </button>
+          <button type="button" id="closeTableModalBtn" class="modal-close-btn" aria-label="Close table modal">&times;</button>
+        </div>
+      </div>
+      <div class="dialog-body table-modal-body">
+        <div class="table-modal-toolbar">
+          <input
+            type="text"
+            id="modalTableSearchInput"
+            class="modal-search-input"
+            placeholder="Filter rows..."
+            aria-label="Filter rows"
+          />
+          <span class="modal-filtered-status" id="modalTableFilteredStatus">Showing all rows</span>
+        </div>
+        <div class="table-scroll-wrap modal-table-scroll" id="modalTableContainer">
+          <table class="analysis-result-table" id="modalResultTable">
+            <thead id="modalResultThead"></thead>
+            <tbody id="modalResultTbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="dialog-footer">
+        <button id="closeTableModalBottomBtn" class="btn btn-primary" aria-label="Close table modal">Close</button>
       </div>
     </div>
   </div>

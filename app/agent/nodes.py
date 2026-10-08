@@ -612,7 +612,7 @@ def dataset_analysis_node(state: AgentState) -> dict:
     except Exception as e:
         err_res = {
             "final_response": f"Analysis plan compilation error: {e}",
-            "tool_used": "compile_plan",
+            "tool_used": "execute_analysis_plan",
             "retrieval_count": 0,
             "status": "error",
             "awaiting_entity": None,
@@ -633,7 +633,7 @@ def dataset_analysis_node(state: AgentState) -> dict:
     except Exception as e:
         err_res = {
             "final_response": f"Dataset query execution failed: {e}",
-            "tool_used": "execute_compiled_query",
+            "tool_used": "execute_analysis_plan",
             "retrieval_count": 0,
             "status": "error",
             "awaiting_entity": None,
@@ -651,7 +651,9 @@ def dataset_analysis_node(state: AgentState) -> dict:
     )
 
     # 6. Grounded LLM Explanation with Deterministic Guardrail
-    if previous_plan:
+    if previous_plan or result.plan.group_by:
+        # Grouped / Ranked analytical findings and multi-turn mutations use the deterministic
+        # ranking template directly to guarantee 100% agreement between table and narrative.
         final_answer = deterministic_summary
     else:
         final_answer = deterministic_summary
@@ -670,17 +672,8 @@ State the verified findings in a concise, natural sentence. Do not alter, contra
                 {"role": "system", "content": "You are a factual data assistant. State the verified query findings directly."},
                 {"role": "user", "content": grounding_prompt},
             ])
-            candidate_text = resp.content if hasattr(resp, "content") else str(resp)
-            candidate_text = candidate_text.strip()
-
-            # Deterministic Guardrail: LLM explanation must retain the verified lead entity
-            if result.rows and result.plan.group_by:
-                group_col = result.plan.group_by[0].column
-                lead_val = str(result.rows[0].get(group_col, "")).lower()
-                if lead_val and lead_val in candidate_text.lower():
-                    final_answer = candidate_text
-                else:
-                    final_answer = deterministic_summary
+            if result.plan.outlier_analysis and "outlier" not in candidate_text.lower():
+                final_answer = deterministic_summary
             else:
                 final_answer = candidate_text or deterministic_summary
         except Exception:

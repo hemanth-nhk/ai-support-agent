@@ -31,7 +31,26 @@ _DATASET_ID_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _DATASET_ANALYTIC_PATTERNS = re.compile(
-    r"\b(?:average|avg|mean|total|sum|highest|lowest|top|bottom|most|least|breakdown|distribution|compare|trends?|correlation|per|filter|filters|clear|reset|rolling|cumulative|instead|sort|plot|chart)\b|"
+    r"\b(?:"
+    r"average|averages|avg|mean|"
+    r"total|totals|sum|sums|count|counts|"
+    r"minimum|min|maximum|max|highest|lowest|top|bottom|most|least|"
+    r"trend|trends|"
+    r"group|groups|grouping|grouped|"
+    r"compare|comparing|comparison|comparative|"
+    r"percentage|percentages|percent|%"
+    r"metric|metrics|"
+    r"row|rows|column|columns|"
+    r"distribution|distributions|breakdown|breakdowns|"
+    r"pivot|pivots|cross-?tabs?|cross-?tabulations?|"
+    r"correlation|correlations|"
+    r"rolling|cumulative|"
+    r"filter|filters|filtered|filtering|clear|reset|instead|"
+    r"sort|sorted|sorting|rank|ranks|ranking|"
+    r"plot|plots|plotting|chart|charts|graph|graphs|heatmap|heatmaps|"
+    r"revenue|sales|profit|quantity|units|"
+    r"per"
+    r")\b|"
     r"\b(?:in|from|about)\s+(?:the|this|my|uploaded)\s+(?:dataset|data|table|csv|file)\b|"
     r"\b(?:dataset|data|table|csv)\b",
     re.IGNORECASE,
@@ -336,19 +355,11 @@ def classify_intent(
             "candidate_intents": [INTENT_GENERAL],
         }
 
-    # Priority 6: Active Attachment or explicit Document reference -> DOCUMENT_QUERY
-    if active_document_id is not None or has_document_pattern:
-        return {
-            "intent": INTENT_DOCUMENT_QUERY,
-            "order_id": order_id,
-            "customer_id": customer_id,
-            "document_id": active_document_id,
-            "dataset_id": active_dataset_id,
-            "confidence": 0.95,
-            "candidate_intents": [INTENT_DOCUMENT_QUERY],
-        }
+    # Check dataset signals if a dataset is active
+    has_dataset_signal = False
+    candidate_num_metrics = []
+    has_active_plan = False
 
-    # Priority 7: Active Tabular Dataset Query -> DATASET_ANALYSIS or AMBIGUOUS
     if active_dataset_id is not None:
         dataset_meta = None
         try:
@@ -356,9 +367,6 @@ def classify_intent(
             dataset_meta = dataset_service.get_dataset(active_dataset_id)
         except Exception:
             pass
-
-        has_dataset_signal = False
-        candidate_num_metrics = []
 
         if dataset_meta:
             from app.analytics.compiler import classify_dtype
@@ -375,41 +383,71 @@ def classify_intent(
             has_active_plan = bool(previous_state and (previous_state.get("active_analysis_plan") or previous_state.get("analysis_plan")))
             has_dataset_signal = bool(_DATASET_ANALYTIC_PATTERNS.search(text)) or has_active_plan
 
-        if has_dataset_signal:
-            has_superlative = bool(_SUPERLATIVE_PATTERNS.search(text))
-            metric_specified = any(m.lower() in text for m in candidate_num_metrics)
+    # Priority 6A: Explicit document reference without analytical dataset signal -> DOCUMENT_QUERY
+    # (e.g. "According to the uploaded document, what is the policy?", "Summarize this PDF")
+    if has_document_pattern and not (active_dataset_id is not None and has_dataset_signal):
+        return {
+            "intent": INTENT_DOCUMENT_QUERY,
+            "order_id": order_id,
+            "customer_id": customer_id,
+            "document_id": active_document_id,
+            "dataset_id": active_dataset_id,
+            "confidence": 0.95,
+            "candidate_intents": [INTENT_DOCUMENT_QUERY],
+        }
 
-            if not has_active_plan and has_superlative and len(candidate_num_metrics) >= 2 and not metric_specified:
-                return {
-                    "intent": INTENT_AMBIGUOUS,
-                    "order_id": None,
-                    "customer_id": None,
-                    "document_id": active_document_id,
-                    "dataset_id": active_dataset_id,
-                    "confidence": 0.5,
-                    "candidate_intents": [INTENT_DATASET_ANALYSIS],
-                    "awaiting_entity": "dataset_metric",
-                    "pending_analysis": {
-                        "dataset_id": active_dataset_id,
-                        "question": message,
-                        "candidate_metrics": candidate_num_metrics,
-                    },
-                    "ambiguity_details": {
-                        "type": "dataset_metric",
-                        "question": message,
-                        "candidate_metrics": candidate_num_metrics,
-                    },
-                }
+    # Priority 6B: Active Tabular Dataset Query -> DATASET_ANALYSIS or AMBIGUOUS
+    # When dataset is attached and query contains analytical signals (totals, averages, counts,
+    # rankings, grouping, metrics, columns, filters, etc.), route to DATASET_ANALYSIS even if
+    # a document is also attached.
+    if active_dataset_id is not None and has_dataset_signal:
+        has_superlative = bool(_SUPERLATIVE_PATTERNS.search(text))
+        metric_specified = any(m.lower() in text for m in candidate_num_metrics)
 
+        if not has_active_plan and has_superlative and len(candidate_num_metrics) >= 2 and not metric_specified:
             return {
-                "intent": INTENT_DATASET_ANALYSIS,
-                "order_id": order_id,
-                "customer_id": customer_id,
+                "intent": INTENT_AMBIGUOUS,
+                "order_id": None,
+                "customer_id": None,
                 "document_id": active_document_id,
                 "dataset_id": active_dataset_id,
-                "confidence": 0.95,
+                "confidence": 0.5,
                 "candidate_intents": [INTENT_DATASET_ANALYSIS],
+                "awaiting_entity": "dataset_metric",
+                "pending_analysis": {
+                    "dataset_id": active_dataset_id,
+                    "question": message,
+                    "candidate_metrics": candidate_num_metrics,
+                },
+                "ambiguity_details": {
+                    "type": "dataset_metric",
+                    "question": message,
+                    "candidate_metrics": candidate_num_metrics,
+                },
             }
+
+        return {
+            "intent": INTENT_DATASET_ANALYSIS,
+            "order_id": order_id,
+            "customer_id": customer_id,
+            "document_id": active_document_id,
+            "dataset_id": active_dataset_id,
+            "confidence": 0.95,
+            "candidate_intents": [INTENT_DATASET_ANALYSIS],
+        }
+
+    # Priority 6C: Active Document Attachment or explicit document pattern -> DOCUMENT_QUERY
+    # (Handles document-specific factual/policy questions like DAT_11)
+    if active_document_id is not None or has_document_pattern:
+        return {
+            "intent": INTENT_DOCUMENT_QUERY,
+            "order_id": order_id,
+            "customer_id": customer_id,
+            "document_id": active_document_id,
+            "dataset_id": active_dataset_id,
+            "confidence": 0.95,
+            "candidate_intents": [INTENT_DOCUMENT_QUERY],
+        }
 
     # Priority 8 (No active attachment): Generic order keywords
     if has_order_keywords:

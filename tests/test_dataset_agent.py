@@ -295,3 +295,40 @@ def test_chat_endpoint_session_isolation(client, multi_metric_dataset):
     data = res.json()
     assert data["status"] == "error"
     assert "access denied" in data["response"].lower()
+
+
+# ---------------------------------------------------------------------------
+# 7. Dual Attachment Routing Disambiguation Tests
+# ---------------------------------------------------------------------------
+
+def test_dual_attachment_analytical_query_routes_to_dataset(multi_metric_dataset):
+    """When both dataset and document are attached, analytical queries route to DATASET_ANALYSIS."""
+    metadata, _ = multi_metric_dataset
+    res = classify_intent(
+        "Which region has the highest revenue?",
+        dataset_id=metadata.dataset_id,
+        document_id="some-doc-id",
+    )
+    assert res["intent"] == INTENT_DATASET_ANALYSIS
+
+
+def test_dual_attachment_document_query_routes_to_document(multi_metric_dataset):
+    """When both dataset and document are attached, policy/document queries route to DOCUMENT_QUERY."""
+    metadata, _ = multi_metric_dataset
+    res = classify_intent(
+        "What return period does the policy mention?",
+        dataset_id=metadata.dataset_id,
+        document_id="some-doc-id",
+    )
+    assert res["intent"] == INTENT_DOCUMENT_QUERY
+
+
+def test_dual_attachment_explicit_document_routes_to_document(multi_metric_dataset):
+    """When both attached, explicit document pattern routes to DOCUMENT_QUERY."""
+    metadata, _ = multi_metric_dataset
+    res = classify_intent(
+        "According to the uploaded document, what is the policy?",
+        dataset_id=metadata.dataset_id,
+        document_id="some-doc-id",
+    )
+    assert res["intent"] == INTENT_DOCUMENT_QUERY

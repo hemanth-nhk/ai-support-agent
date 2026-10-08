@@ -100,8 +100,61 @@ def extract_text(filename: str, content_bytes: bytes) -> str:
         try:
             import docx
             doc = docx.Document(io.BytesIO(content_bytes))
-            paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-            text = "\n".join(paragraphs).strip()
+            extracted_parts: list[str] = []
+
+            # 1. Section Headers (deduplicate identical header text across sections)
+            seen_headers: set[str] = set()
+            for section in doc.sections:
+                try:
+                    header = section.header
+                    if header:
+                        for p in header.paragraphs:
+                            t = p.text.strip()
+                            if t and t not in seen_headers:
+                                seen_headers.add(t)
+                                extracted_parts.append(t)
+                except Exception:
+                    pass
+
+            # 2. Body Paragraphs
+            for p in doc.paragraphs:
+                t = p.text.strip()
+                if t:
+                    extracted_parts.append(t)
+
+            # 3. Table Rows and Cells (preserves readable ordering and cell content)
+            for table in doc.tables:
+                for row in table.rows:
+                    row_cells: list[str] = []
+                    seen_cells: set[int] = set()
+                    for cell in row.cells:
+                        cell_id = id(cell._tc)
+                        if cell_id in seen_cells:
+                            continue
+                        seen_cells.add(cell_id)
+                        cell_text = " ".join(p.text.strip() for p in cell.paragraphs if p.text.strip())
+                        if not cell_text and cell.text.strip():
+                            cell_text = cell.text.strip()
+                        if cell_text:
+                            row_cells.append(cell_text)
+                    if row_cells:
+                        extracted_parts.append(" | ".join(row_cells))
+
+            # 4. Section Footers (deduplicate identical footer text across sections)
+            seen_footers: set[str] = set()
+            for section in doc.sections:
+                try:
+                    footer = section.footer
+                    if footer:
+                        for p in footer.paragraphs:
+                            t = p.text.strip()
+                            if t and t not in seen_footers:
+                                seen_footers.add(t)
+                                extracted_parts.append(t)
+                except Exception:
+                    pass
+
+            text = "\n".join(extracted_parts).strip()
         except Exception as e:
             raise DocumentValidationError(f"Failed to parse DOCX document: {e}")
 

@@ -423,3 +423,63 @@ def test_upload_empty_file_returns_400(client_with_mock_chroma):
     )
     assert res.status_code == 400
     assert "empty" in res.json()["detail"].lower()
+
+
+# ============================================================================
+# 8. DOCX Table & Header/Footer Extraction Tests
+# ============================================================================
+
+def test_docx_table_only_extraction():
+    """Verifies that facts contained strictly in DOCX table cells are extracted."""
+    import docx
+    doc = docx.Document()
+    table = doc.add_table(rows=3, cols=2)
+    table.cell(0, 0).text = "Customer ID"
+    table.cell(0, 1).text = "C1024"
+    table.cell(1, 0).text = "Refund period"
+    table.cell(1, 1).text = "30 days"
+    table.cell(2, 0).text = "Warranty"
+    table.cell(2, 1).text = "12 months"
+    buf = io.BytesIO()
+    doc.save(buf)
+    text = extract_text("table_only.docx", buf.getvalue())
+    assert "C1024" in text
+    assert "30 days" in text
+    assert "12 months" in text
+
+
+def test_docx_mixed_paragraph_and_table_extraction():
+    """Verifies that facts split across body paragraphs and tables are extracted."""
+    import docx
+    doc = docx.Document()
+    doc.add_paragraph("Customer ID: C1024")
+    doc.add_paragraph("Refund period: 30 days")
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Warranty"
+    table.cell(0, 1).text = "12 months"
+    table.cell(1, 0).text = "Approval limit"
+    table.cell(1, 1).text = "50,000"
+    buf = io.BytesIO()
+    doc.save(buf)
+    text = extract_text("mixed.docx", buf.getvalue())
+    assert "C1024" in text
+    assert "30 days" in text
+    assert "12 months" in text
+    assert "50,000" in text
+
+
+def test_docx_header_footer_extraction():
+    """Verifies that facts in headers, footers, and body paragraphs are extracted deterministically."""
+    import docx
+    doc = docx.Document()
+    sec = doc.sections[0]
+    sec.header.paragraphs[0].text = "Header Policy: Customer ID: C1024"
+    sec.footer.paragraphs[0].text = "Footer Note: Approval limit: 50,000"
+    doc.add_paragraph("Body: Refund period: 30 days. Warranty: 12 months.")
+    buf = io.BytesIO()
+    doc.save(buf)
+    text = extract_text("header_footer.docx", buf.getvalue())
+    assert "C1024" in text
+    assert "50,000" in text
+    assert "30 days" in text
+    assert "12 months" in text

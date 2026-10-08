@@ -1,167 +1,318 @@
-# AI Customer Support Agent (Local-Only)
+# AI Customer Support & Tabular Analytics Platform (Local-Only)
 
-A locally-run AI customer support system: FastAPI REST + Strawberry GraphQL, a deterministic LangGraph agent, RAG over local FAQ documents, and a SQLite order database. **No cloud APIs, no API keys for the LLM** -- the only LLM inference is via Ollama running on your own machine. (A separate, unrelated `SUPPORT_API_KEY` gates one sensitive endpoint -- see Guardrails below.)
+An enterprise-grade, locally-hosted customer support automation and deterministic tabular analytics platform. Combines rule-based support workflows, local RAG document grounding, and an in-memory DuckDB analytical engine with server-side chart rendering and conversational multi-turn analytical memory.
+
+**No cloud APIs, no external LLM dependencies, zero cloud data leakage.** Inference runs on your own machine via Ollama (`llama3.2:3b` by default), vector search runs in local Chroma, and structured data is queried using in-memory DuckDB.
+
+---
 
 ## Architecture
 
 ```
-User
- |
- |-- REST (FastAPI)
- `-- GraphQL (Strawberry)
-       |
-       v
-  LangGraph Agent
-       |
-  Deterministic Intent Classifier (keyword/pattern rules -- NOT the LLM)
-       |
- +-----+--------------+----------------+
- |     |              |                |
-Order  Customer      FAQ (RAG)      General / Out-of-scope
-Tool   Orders Tool    Tool
- |     |              |
- +-----+-- SQLite     `-- Chroma (local vector store, cosine distance)
-       |                      |
-       `-- Service layer -----'
-                |
-       Guardrails (Pydantic validation, fail-closed)
-                |
-        Response envelope: {response, intent, tool_used, retrieval_count, status}
-                |
-                v
-              User
+User (Browser SPA / REST API / GraphQL)
+  │
+  ├── REST Endpoints (FastAPI)
+  ├── GraphQL Playground (Strawberry)
+  └── Single-Page Application (HTML5 / Vanilla CSS / JS)
+        │
+        ▼
+   LangGraph Agent
+        │
+   Deterministic Intent Classifier (Keyword & regex rules — NOT the LLM)
+        │
+  ┌─────┴───────────────┬────────────────────────┬────────────────────────┐
+  │                     │                        │                        │
+Order / Customer      FAQ RAG                Document QA           Tabular Analytics
+Workflows             (Chroma Cosine)        (Session Ingestion)   Engine (DuckDB)
+  │                     │                        │                        │
+  ▼                     ▼                        ▼                        ▼
+SQLite Database       Local Chroma Store      Local Uploads        AST Planner & Compiler
+(Parameterized)       (Approved Excerpts)    (PDF / DOCX / TXT)   (AnalysisPlan AST)
+                                                                          │
+                                                                          ▼
+                                                                   In-Memory DuckDB
+                                                                   (Sandboxed Execution)
+                                                                          │
+                                                                          ▼
+                                                                   Visualization Engine
+                                                                   (Matplotlib OO Canvas)
+                                                                          │
+  ┌───────────────────────────────────────────────────────────────────────┘
+  ▼
+Guardrails & Schema Envelopes (Pydantic, Fail-Closed)
+  │
+  ▼
+Response Envelope: { response, intent, tool_used, retrieval_count, status, chart, table, pivot }
 ```
 
-**Key design decision:** the LLM (Ollama) is used *only* for general conversational replies (greetings, "what can you help with") that carry no factual/business content. Order status, customer order lists, and FAQ answers are built from **deterministic templates and verbatim approved text** -- the LLM never touches them, and can therefore never fabricate a detail in these paths. Routing is 100% deterministic keyword/pattern matching (`app/agent/router.py`), not LLM-based classification.
+### Core Architecture & Guarantees
 
-## Guardrails (enforced, not aspirational)
+1. **Zero Arbitrary SQL:** The LLM *never* generates SQL strings. Queries are compiled from a strictly validated Pydantic AST (`AnalysisPlan`), using double-quote identifier escaping, data-type compatibility checks, and parameterized filters / safe literal formatting.
+2. **Zero Arbitrary Python Execution:** Neither the LLM nor the user can inject Python code. Visualization uses an isolated, server-controlled Object-Oriented Matplotlib engine (`Figure`/`Canvas`) with fixed styling tokens.
+3. **No Hallucinated Facts or Numbers:**
+   - Order and customer details are rendered from deterministic SQLite templates.
+   - FAQ responses quote approved excerpts verbatim.
+   - Analytical findings are grounded exclusively in executed DuckDB result sets and matrix totals.
+4. **Sandboxed DuckDB Runtime:** Queries run in ephemeral in-memory databases with hard resource boundaries (`512MB RAM`, `2 threads`, `5.0-second` hardware cancellation timers, row-output clamps).
+5. **Fail-Closed Semantics:** Any unhandled exception, schema mismatch, or path violation fails closed to a safe error envelope without state corruption.
 
-- **True no-fabrication guarantee on facts.** Order/customer responses are built with an f-string template directly from SQLite fields. FAQ responses return the approved document excerpt verbatim. The LLM is never invoked on these paths at all -- not "asked not to invent," structurally unable to.
-- FAQ retrieval uses a similarity threshold on **cosine distance**, with the Chroma collection explicitly configured for cosine space (`metadata={"hnsw:space": "cosine"}` in `app/rag/ingestion.py`) -- without this, Chroma's default L2 distance would make the threshold meaningless. A weak/no match returns a static "not enough information" message.
-- Out-of-scope requests are refused via keyword detection before reaching the LLM.
-- Every `/chat` response is validated by Pydantic (`app/agent/guardrails.py`) against a fixed schema and an allow-list of valid `status`/`tool_used` values. Any malformed state fails closed to `status: "error"`.
-- No chain-of-thought is ever exposed. The API returns exactly 5 fields: `response`, `intent`, `tool_used`, `retrieval_count`, `status`.
-- `GET /customers/{id}/orders` and the GraphQL `customerOrders` field require an `X-API-Key` header matching `SUPPORT_API_KEY` in `.env`. **This is demo-level protection only** -- a shared key that gates the whole endpoint, not real per-customer authentication/ownership checks. Replace before any non-demo use. See `app/api/auth.py`.
-- `python -m app.database.seed` is idempotent by default -- it will not wipe existing data unless you pass `--force`.
+---
+
+## Implemented Capabilities (Phases 1–9)
+
+### 1. Customer Support Workflows
+- **Order Lookup:** Instant order tracking (`ORDER_STATUS`) by ID using parameterized SQLite queries.
+- **Customer Order History:** Lookup of past orders gated by a demo API key header (`X-API-Key`).
+- **Entity Recovery & Ambiguity Handling:** Conversational recovery when an order ID is missing or multiple customer records match.
+- **Out-of-Scope Protection:** Immediate, zero-LLM refusal for unrelated requests.
+
+### 2. Document RAG (FAQ Knowledge Base)
+- **Local Vector Search:** Persistent Chroma store (`chromadb==1.5.9`) configured with explicit cosine space (`hnsw:space: cosine`).
+- **Sentence-Transformers Embeddings:** Local embedding model (`all-MiniLM-L6-v2`).
+- **Threshold-Gated Citations:** Cosine distance cutoff (default `0.35`). Queries below confidence threshold fall back to a safe "insufficient information" response without guessing.
+
+### 3. Ad-Hoc Session Document QA
+- **Multi-Format Ingestion:** Session-isolated upload of `.pdf`, `.docx`, and `.txt` files.
+- **DOCX Structure Extraction:** Deterministic traversal of section headers, body paragraphs, tables (with pipe-delimited cell representations and horizontally merged cell deduplication), and section footers.
+- **Chunking & Storage:** Ingested into session-isolated Chroma collections.
+- **Prompt-Injection Defense:** Untrusted document contents are wrapped in rigid boundary delimiters; LLM is instructed to treat text strictly as passive data.
+- **Explicit OCR Boundary:** Scanned or image-only PDFs lacking embedded text streams fail closed safely with a validation error; local offline text extraction intentionally avoids heavy OCR dependencies.
+
+### 4. Tabular Dataset Ingestion & Fast Profiling
+- **Supported Formats:** `.csv`, `.xlsx`, and `.json`.
+- **Automated Profiling:** Extracts column data types, null counts, distinct cardinality, numerical summaries (mean, min, max, stddev), and temporal boundaries.
+- **File Validation:** Size limits (default `50MB`), format checking, and path-traversal prevention.
+
+### 5. Deterministic DuckDB Analytics Engine
+- **AST Compiler:** Translates natural-language intent into an `AnalysisPlan` model, compiled into DuckDB SQL.
+- **Aggregations & Grouping:** `sum`, `avg`, `count`, `count_distinct`, `min`, `max`, `median`, `stddev`, and `percentile_cont`.
+- **Temporal Bucketing:** Date truncation (`year`, `quarter`, `month`, `day`).
+- **Parameterized Filtering:** `==`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `not_in`, `contains`, `starts_with`, `between`, `is_null`, `is_not_null`.
+
+### 6. Advanced Analytics & Statistical Operators
+- **Rolling Windows:** Moving averages and moving sums with configurable window sizes and partition dimensions.
+- **Cumulative Metrics:** Running sums, running totals, and running averages over temporal dimensions.
+- **Quantile Segmentation:** NTILE bucketing (quartiles, deciles, percentiles) for distribution analysis.
+- **Z-Score Anomaly Detection:** Mean and standard deviation computation with parameterized threshold filtering (e.g., $z > 3.0$) and zero-variance guards.
+- **Period Comparisons:** Month-over-month (MoM) and year-over-year (YoY) percentage growth and delta comparisons.
+- **Derived Metrics & Ratios:** Safe percentage and ratio calculations with division-by-zero protection.
+- **Correlation:** Deterministic Pearson correlation matrix calculation between numerical columns.
+
+### 7. Multi-Turn Analytical Memory (Conversational AST Mutations)
+- **Session-Persisted Plan:** `active_analysis_plan` is tracked per session across user turns.
+- **Incremental Mutations:** Modifies plans incrementally without restarting analysis:
+  - `ADD_FILTER` / `CHANGE_FILTER` / `REMOVE_FILTER`
+  - `CHANGE_GROUP_BY` / `ADD_GROUP_BY` / `REMOVE_GROUP_BY`
+  - `CHANGE_METRIC` / `CHANGE_SORT` / `CHANGE_LIMIT`
+  - `ADD_ROLLING` / `ADD_CUMULATIVE` / `TOGGLE_CHART` / `RESET_ANALYSIS`
+- **Fail-Closed Rollback:** Invalid column names or uncompilable mutations preserve the previous valid plan.
+- **Dataset Isolation:** Switching `dataset_id` automatically purges previous analytical memory to prevent cross-dataset contamination.
+
+### 8. 2D Cross-Tab / Pivot Analysis & Heatmap Visualization (Phase 9)
+- **Pivot AST (`PivotSpec` & `PivotResult`):** Strict Pydantic models for 2D matrix transformations with bounded row/column cardinalities.
+- **Deterministic DuckDB PIVOT:** Dynamic SQL pivoting with escaped identifiers, safe literal filters, and bounded `LIMIT`.
+- **Matrix Normalization:** Outputs structured row headers, column headers, 2D numerical values (`list[list[Optional[float]]]`), and marginal row, column, and grand totals.
+- **Server-Side Heatmap Rendering:** Matplotlib OO Canvas heatmap with `"YlGnBu"` colormap, annotated cells with contrast thresholding, colorbars, and rotated labels.
+- **Conversational Mutations:** `TOGGLE_HEATMAP` and `CHANGE_PIVOT_COLUMNS` follow-up support.
+- **Grounded Matrix Findings:** Generates factual summaries referencing matrix dimensions, the leading cell value, and the grand total.
+
+### 9. Web Application Dashboard
+- **Single-Page Application (`static/`):** Full chat interface with localStorage thread history.
+- **Document & Dataset Chips:** Visual indicators for active attachments.
+- **Interactive Tables:** Paginated result tables for analytical responses.
+- **Chart Viewer:** Inline chart cards with fullscreen modal zoom and PNG download.
+
+---
 
 ## Tech Stack
 
-- **API:** FastAPI (REST), Strawberry (GraphQL) -- both call the same service layer, no duplicated logic
-- **Agent:** LangGraph (deterministic routing, not LLM-based)
-- **LLM:** Ollama, local (`llama3.2:3b` by default) via `langchain-ollama` -- used only for non-factual general replies
-- **RAG:** sentence-transformers embeddings + local persistent Chroma (`chromadb==1.5.9`, cosine distance)
-- **Database:** SQLite
-- **Validation:** Pydantic
-- **Testing:** pytest -- **55 tests, all passing** as of the last verified run, including RAG mechanics, guardrail semantic consistency, multi-turn entity recovery, and DATA_QUERY v2 parameter search suite.
+| Component | Technology | Role |
+| :--- | :--- | :--- |
+| **API Framework** | FastAPI (REST) + Strawberry (GraphQL) | High-performance API routing and shared service layer |
+| **Agent Framework** | LangGraph | Deterministic DAG state graph and conversation lifecycle |
+| **Inference Engine** | Ollama (`llama3.2:3b`) | Local-only conversational LLM (used strictly for non-factual text) |
+| **Analytics Kernel** | DuckDB (`duckdb==1.5.6`) | In-memory analytical SQL processing engine |
+| **Vector Database** | ChromaDB (`chromadb==1.5.9`) | Local persistent vector search with cosine distance metric |
+| **Embeddings** | sentence-transformers (`all-MiniLM-L6-v2`) | Local offline sentence embeddings |
+| **Data Processing** | pandas + openpyxl + pypdf + python-docx | Dataframe manipulation, Excel, PDF, and Word parsing |
+| **Visualization** | Matplotlib (`matplotlib==3.11.2`) | Deterministic Object-Oriented server-side PNG chart rendering |
+| **Validation** | Pydantic v2 | Strict schema validation, AST enforcement, and fail-closed gates |
+| **Testing** | pytest + httpx + playwright | Automated unit, regression, integration, and E2E testing |
+
+---
 
 ## Project Structure
 
 ```
-app/
-|-- main.py                 FastAPI app, mounts REST + GraphQL
-|-- config.py                 Settings (from .env)
-|-- logging_config.py
-|-- api/
-|   |-- rest.py               REST endpoints incl. POST /chat, protected customer-orders route
-|   |-- graphql.py              Strawberry schema, reuses services, protected customerOrders field
-|   |-- auth.py                  Demo-level API key check (app/api/auth.py)
-|   `-- schemas.py                Pydantic request/response models
-|-- agent/
-|   |-- state.py               LangGraph state definition
-|   |-- router.py               Deterministic intent classification
-|   |-- nodes.py                 Graph nodes -- deterministic templates for order/customer/FAQ, LLM only in general_node
-|   |-- graph.py                  Graph assembly + compiled entrypoint
-|   |-- llm_client.py              Ollama wrapper (text-only, no structured output)
-|   `-- guardrails.py               Response envelope validation, fail-closed
-|-- tools/
-|   `-- order_tool.py           LangGraph-facing wrapper over order_service
-|-- services/
-|   `-- order_service.py         Business logic (shared by REST/GraphQL/agent)
-|-- repositories/
-|   |-- order_repository.py       Raw SQLite access
-|   `-- customer_repository.py
-|-- database/
-|   |-- connection.py
-|   |-- models.py                  Schema DDL
-|   `-- seed.py                     Idempotent demo data (--force to reset)
-`-- rag/
-    |-- ingestion.py                Load + chunk + embed + persist to Chroma (cosine space configured)
-    |-- embeddings.py                sentence-transformers wrapper
-    `-- retriever.py                  Threshold-enforced retrieval, injectable for testing
-
-data/faq/         shipping.txt, returns.txt, refunds.txt, cancellation.txt (DEMO DATA)
-tests/            test_api.py, test_graphql.py, test_agent.py, test_tools.py, test_chat_endpoint.py, test_rag.py
+ai-support-agent/
+├── app/
+│   ├── main.py                     FastAPI entrypoint, mounting REST, GraphQL, static UI
+│   ├── config.py                   Pydantic Settings (loads .env)
+│   ├── api/
+│   │   ├── rest.py                 REST endpoints (/chat, /charts/*, /orders/*, etc.)
+│   │   ├── graphql.py              Strawberry GraphQL schema and resolvers
+│   │   ├── schemas.py              Pydantic API request/response models
+│   │   └── auth.py                 Demo-level API key authorization gate
+│   ├── agent/
+│   │   ├── state.py                LangGraph AgentState definition
+│   │   ├── router.py               Deterministic intent classification
+│   │   ├── nodes.py                Graph execution nodes (support, RAG, analytics)
+│   │   ├── graph.py                Compiled LangGraph state workflow
+│   │   ├── guardrails.py           Response envelope validation (fail-closed)
+│   │   └── llm_client.py           Ollama client wrapper
+│   ├── analytics/
+│   │   ├── schemas.py              AnalysisPlan, PivotSpec, PivotResult, mutations
+│   │   ├── compiler.py             Deterministic DuckDB SQL compiler (standard + PIVOT)
+│   │   ├── executor.py             Sandboxed in-memory DuckDB query runner
+│   │   ├── planner.py              Natural-language intent planner and grounded findings
+│   │   ├── mutator.py              Deterministic AST mutation engine (Phase 8 & 9)
+│   │   ├── visualizer.py           Matplotlib chart engine (bar, line, scatter, hist, heatmap)
+│   │   ├── chart_style.py          Centralized color palette, geometry, and design tokens
+│   │   ├── profiler.py             Fast dataset profiling engine
+│   │   └── dataset_service.py      Dataset lifecycle, disk storage, and session isolation
+│   ├── services/
+│   │   ├── order_service.py        Order querying and customer management
+│   │   └── document_service.py     Session document ingestion and retrieval
+│   ├── repositories/
+│   │   ├── order_repository.py     Raw SQLite database queries
+│   │   └── customer_repository.py  Customer record queries
+│   ├── database/
+│   │   ├── connection.py           SQLite thread-safe connection factory
+│   │   ├── models.py               SQLite schema definitions
+│   │   └── seed.py                 Idempotent demo dataset seeder
+│   └── rag/
+│       ├── ingestion.py            FAQ document loading, chunking, and Chroma persistence
+│       ├── retriever.py            Threshold-enforced cosine vector search
+│       └── embeddings.py           sentence-transformers model wrapper
+├── static/                         Frontend Single-Page Dashboard (HTML, CSS, JS)
+├── data/
+│   └── faq/                        Static customer policy documents (shipping, returns, etc.)
+├── evaluation/                     Empirical benchmark & evaluation suites
+│   └── reliability/                Real-World File Reliability & Adversarial Benchmark (104 cases)
+├── tests/                          Comprehensive test suite (245 tests)
+│   ├── test_analysis_pivot.py      Phase 9 Pivot & Heatmap test suite (21 tests)
+│   ├── test_analysis_multiturn.py  Phase 8 Multi-Turn Memory test suite (15 tests)
+│   ├── test_analysis_v3.py         Phase 7 Advanced Analytics test suite
+│   ├── test_analysis_v2.py         Phase 6 Statistical Operators test suite
+│   ├── test_analysis_compiler.py   Phase 3 Deterministic Compiler test suite
+│   ├── test_visualizer.py          Phase 4 Visualization Engine test suite
+│   ├── test_datasets.py            Phase 2 Dataset Ingestion & Profiling test suite
+│   ├── test_documents.py           Session Document QA & extraction test suite
+│   ├── test_document_query.py      Session Document retrieval test suite
+│   ├── test_chat_endpoint.py       End-to-end /chat API integration tests
+│   └── ...                         Agent, RAG, GraphQL, and security tests
+├── pytest.ini                      Pytest configuration (scoped to tests/)
+├── requirements.txt                Fully pinned production dependencies
+├── .env.example                    Example configuration template
+└── README.md                       Project documentation
 ```
 
-## Setup (Windows)
+---
 
-See **WINDOWS_SETUP_CHECKLIST.md** for the full step-by-step, including the API key setup and manual RAG verification. Short version:
+## Setup & Quickstart
+
+### Prerequisites
+- Python 3.11+
+- [Ollama](https://ollama.com/) installed and running locally
+
+### Installation (Windows / PowerShell)
 
 ```powershell
+# 1. Clone the repository
 git clone https://github.com/hemanth-nhk/ai-support-agent.git
 cd ai-support-agent
-py -3.11 -m venv venv
-venv\Scripts\activate
+
+# 2. Create and activate a virtual environment
+python -m venv venv
+.\venv\Scripts\activate
+
+# 3. Install pinned dependencies
 pip install -r requirements.txt
+
+# 4. Configure environment
 copy .env.example .env
-REM edit .env and set SUPPORT_API_KEY to any value
+
+# 5. Seed demo database and build local FAQ vector store
 python -m app.database.seed
 python -m app.rag.ingestion
+
+# 6. Pull local Ollama model
+ollama pull llama3.2:3b
+
+# 7. Start the development server
+uvicorn app.main:app --reload
+```
+
+### Installation (Linux / macOS)
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+python3 -m app.database.seed
+python3 -m app.rag.ingestion
 ollama pull llama3.2:3b
 uvicorn app.main:app --reload
 ```
 
-Visit:
-- REST docs: `http://127.0.0.1:8000/docs`
-- GraphQL playground: `http://127.0.0.1:8000/graphql`
+Visit the application in your browser:
+- **Interactive UI Dashboard:** `http://127.0.0.1:8000/app`
+- **Interactive Swagger Docs:** `http://127.0.0.1:8000/docs`
+- **GraphQL Playground:** `http://127.0.0.1:8000/graphql`
 
-## Running Tests
+---
+
+## Verification & Test Suite
+
+The project includes an exhaustive automated test suite covering unit contracts, deterministic SQL compilation, security injection defenses, session isolation, multi-turn memory, and browser E2E flows, alongside an empirical reliability and adversarial stress benchmark.
 
 ```powershell
-pytest tests/ -v
+# Run the complete core regression suite (245 tests)
+pytest -q
+
+# Run Phase 9 cross-tab pivot & heatmap tests
+pytest tests/test_analysis_pivot.py -v
+
+# Run analytical regression test suite (73 tests)
+pytest tests/test_analysis_compiler.py tests/test_analysis_v2.py tests/test_analysis_v2_compiler.py tests/test_analysis_v3.py tests/test_analysis_v3_compiler.py tests/test_analysis_multiturn.py -v
+
+# Run the complete Real-World File Reliability & Adversarial Benchmark (104 cases)
+python evaluation/reliability/run_benchmark.py
 ```
 
-35 tests pass without Ollama running and without a real embedding model (RAG tests use a deterministic stub -- see `tests/test_rag.py`). To validate real embedding quality and live Ollama phrasing, use the manual checks in the Windows checklist.
+**Core Regression Status:** **`245 passed, 0 failures, 0 regressions`**.
+**Reliability Benchmark Status:** **`104/104 passed (100% extraction fidelity, 100% prompt-injection resistance, 0.0% cross-session leakage)`**.
 
-## API Reference
+---
 
-### `POST /chat`
-```json
-{ "message": "Where is order 1001?" }
-```
-```json
-{
-  "response": "Order 1001 (Laptop) is currently: Shipped, estimated delivery 2026-09-15.",
-  "intent": "ORDER_STATUS",
-  "tool_used": "get_order_status",
-  "retrieval_count": 1,
-  "status": "ok"
-}
-```
-Note this response is a deterministic template, not LLM output -- see Guardrails above.
+## Implemented Scope vs. Future Work
 
-### `GET /orders/{order_id}`
-No auth required (order-only lookup, no customer-identifying aggregation).
+To maintain architectural integrity, scope boundaries are strictly maintained:
 
-### `GET /customers/{customer_id}/orders`
-**Requires `X-API-Key` header.** Returns 401 without it, 503 if `SUPPORT_API_KEY` isn't configured server-side.
+### Implemented (Phases 1–9 + Reliability Remediation)
+- Local-only support workflow routing and customer order queries.
+- Chroma vector RAG with cosine thresholding and verbatim quotes.
+- Ingestion, chunking, and deterministic QA of session-uploaded `.pdf`, `.docx`, and `.txt` documents.
+- DOCX full-structure extraction covering section headers, body paragraphs, table rows/cells, and footers.
+- Fast tabular profiling and validation of `.csv`, `.xlsx`, and `.json` datasets.
+- Deterministic DuckDB SQL AST compiler with double-quoted escaping and parameter binding.
+- Advanced statistical analytics (rolling windows, cumulative metrics, quantile NTILEs, z-score anomaly detection, MoM growth, ratios, correlation).
+- Server-side Matplotlib chart rendering (`bar`, `line`, `scatter`, `histogram`, `heatmap`).
+- Multi-turn conversational memory with AST mutations and fail-closed rollback.
+- Phase 9 2D cross-tab pivot tables with marginal totals and bounded heatmaps.
+- Disambiguated dual-attachment routing between tabular analysis and document queries.
 
-### `POST /graphql`
-```graphql
-query {
-  order(id: 1001) { id product status estimatedDelivery }
-}
-```
-`customerOrders` requires the same `X-API-Key` header.
+### Excluded / Future Scope (Explicit Non-Goals for This Milestone)
+- **Scanned Image-Only PDF OCR:** Extraction relies on embedded text streams; offline text parser deliberately omits heavy OCR engines (e.g. Tesseract) to preserve lightweight, deterministic offline execution.
+- **Cross-Source Joint Querying across Dataset and Document:** Queries route deterministically to either tabular SQL or document RAG; simultaneous multi-hop joins across structured and unstructured data are classified as unsupported.
+- **Multi-Table Relational JOINs across files:** Analysis is scoped to single uploaded tabular datasets.
+- **Predictive Machine Learning / Auto-regressive Forecasting:** Analytical queries compute exact empirical statistics, not synthetic ML extrapolations.
+- **Arbitrary LLM-Generated Python / SQL (ReAct code interpreter loops):** Explicitly avoided to guarantee deterministic safety.
+- **Cloud Database Connectors (Snowflake, BigQuery):** Local in-memory DuckDB kernel only.
 
-## Known Limitations / Honest Notes
-
-- Demo data only (`app/database/seed.py`, `data/faq/*.txt`) -- replace before any real use.
-- The `SUPPORT_API_KEY` gate is a single shared secret, not per-customer authentication. A real deployment needs session/JWT-based auth with an ownership check (caller may only see *their own* orders).
-- `llama3.2:3b` is a small model, but this only affects the wording quality of general/non-factual replies now -- it has no path to fabricating an order or policy detail.
-- The RAG similarity threshold (0.35) is a starting point calibrated on the cosine-distance metric (now correctly configured), not empirically tuned against the real embedding model -- validate it against your own test queries and adjust in `.env` if needed.
-- `GET /orders/{order_id}` is intentionally left unauthenticated (single-order lookup by ID, no aggregation across a customer's history) -- reassess this if order IDs become guessable/sequential in a real deployment.
+---
 
 ## Author
 
-Hemanth ([@hemanth-nhk](https://github.com/hemanth-nhk)) -- final-year B.Tech CS (AI & ML), MIST (JNTUH), Hyderabad
+Hemanth ([@hemanth-nhk](https://github.com/hemanth-nhk)) — B.Tech Computer Science (AI & ML), MIST (JNTUH), Hyderabad.

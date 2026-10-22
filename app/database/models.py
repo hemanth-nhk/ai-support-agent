@@ -37,11 +37,42 @@ CREATE TABLE IF NOT EXISTS uploaded_datasets (
 );
 """
 
+CREATE_CONVERSATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    workspace_mode TEXT NOT NULL DEFAULT 'dataset',
+    dataset_id TEXT,
+    active_analysis_plan TEXT,
+    session_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+CREATE_CONVERSATION_MESSAGES_TABLE = """
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    sequence_number INTEGER NOT NULL,
+    sender TEXT NOT NULL,
+    user_message TEXT,
+    assistant_response TEXT,
+    metadata TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations (id) ON DELETE CASCADE
+);
+"""
+
 
 def init_schema(conn) -> None:
     conn.execute(CREATE_CUSTOMERS_TABLE)
     conn.execute(CREATE_ORDERS_TABLE)
     conn.execute(CREATE_UPLOADED_DATASETS_TABLE)
+    conn.execute(CREATE_CONVERSATIONS_TABLE)
+    conn.execute(CREATE_CONVERSATION_MESSAGES_TABLE)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_conv_mode_updated ON conversations (workspace_mode, updated_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_conv_messages_seq ON conversation_messages (conversation_id, sequence_number ASC)")
 
     # Ensure backward compatibility with existing SQLite files
     cursor = conn.execute("PRAGMA table_info(orders)")
@@ -50,3 +81,8 @@ def init_schema(conn) -> None:
         conn.execute("ALTER TABLE orders ADD COLUMN order_time TEXT")
     if "amount" not in existing_cols:
         conn.execute("ALTER TABLE orders ADD COLUMN amount REAL")
+
+    conv_cursor = conn.execute("PRAGMA table_info(conversations)")
+    conv_cols = {row[1] for row in conv_cursor.fetchall()}
+    if "session_id" not in conv_cols:
+        conn.execute("ALTER TABLE conversations ADD COLUMN session_id TEXT")

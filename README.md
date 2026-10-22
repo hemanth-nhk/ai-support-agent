@@ -54,7 +54,8 @@ Response Envelope: { response, intent, tool_used, retrieval_count, status, chart
    - FAQ responses quote approved excerpts verbatim.
    - Analytical findings are grounded exclusively in executed DuckDB result sets and matrix totals.
 4. **Sandboxed DuckDB Runtime:** Queries run in ephemeral in-memory databases with hard resource boundaries (`512MB RAM`, `2 threads`, `5.0-second` hardware cancellation timers, row-output clamps).
-5. **Fail-Closed Semantics:** Any unhandled exception, schema mismatch, or path violation fails closed to a safe error envelope without state corruption.
+5. **Server-Verified Signed Session Identity:** Prevents session spoofing and cross-session data exfiltration. Session identity is cryptographically signed using HMAC-SHA256 (`SESSION_SECRET_KEY`) and resolved exclusively from `app_session_token` HTTP-only SameSite cookies or `X-Session-Token` headers. Client-provided body/query `session_id` values are never trusted as identity. Conversation ownership is immutable across `PATCH` updates, and `/chat` analytical execution verifies ownership before any database query or tool executes.
+6. **Fail-Closed Semantics:** Any unhandled exception, schema mismatch, or path violation fails closed to a safe error envelope without state corruption.
 
 ---
 
@@ -69,7 +70,7 @@ Response Envelope: { response, intent, tool_used, retrieval_count, status, chart
 ### 2. Document RAG (FAQ Knowledge Base)
 - **Local Vector Search:** Persistent Chroma store (`chromadb==1.5.9`) configured with explicit cosine space (`hnsw:space: cosine`).
 - **Sentence-Transformers Embeddings:** Local embedding model (`all-MiniLM-L6-v2`).
-- **Threshold-Gated Citations:** Cosine distance cutoff (default `0.35`). Queries below confidence threshold fall back to a safe "insufficient information" response without guessing.
+- **Threshold-Gated Citations:** Cosine distance cutoff (default `0.42` calibrated for `all-MiniLM-L6-v2`). Queries exceeding distance threshold fall back to a safe "insufficient information" response without guessing.
 
 ### 3. Ad-Hoc Session Document QA
 - **Multi-Format Ingestion:** Session-isolated upload of `.pdf`, `.docx`, and `.txt` files.
@@ -150,6 +151,8 @@ ai-support-agent/
 │   ├── config.py                   Pydantic Settings (loads .env)
 │   ├── api/
 │   │   ├── rest.py                 REST endpoints (/chat, /charts/*, /orders/*, etc.)
+│   │   ├── conversations.py        Conversation lifecycle and dataset binding endpoints
+│   │   ├── session_security.py     HMAC-SHA256 session token verification & CSRF defense
 │   │   ├── graphql.py              Strawberry GraphQL schema and resolvers
 │   │   ├── schemas.py              Pydantic API request/response models
 │   │   └── auth.py                 Demo-level API key authorization gate
@@ -172,10 +175,13 @@ ai-support-agent/
 │   │   └── dataset_service.py      Dataset lifecycle, disk storage, and session isolation
 │   ├── services/
 │   │   ├── order_service.py        Order querying and customer management
+│   │   ├── order_policy_service.py Order return/refund policy evaluation & cross-referencing
+│   │   ├── conversation_service.py Multi-turn conversation management & persistence
 │   │   └── document_service.py     Session document ingestion and retrieval
 │   ├── repositories/
 │   │   ├── order_repository.py     Raw SQLite database queries
-│   │   └── customer_repository.py  Customer record queries
+│   │   ├── customer_repository.py  Customer record queries
+│   │   └── conversation_repository.py SQLite conversation metadata queries
 │   ├── database/
 │   │   ├── connection.py           SQLite thread-safe connection factory
 │   │   ├── models.py               SQLite schema definitions
@@ -189,14 +195,16 @@ ai-support-agent/
 │   └── faq/                        Static customer policy documents (shipping, returns, etc.)
 ├── evaluation/                     Empirical benchmark & evaluation suites
 │   └── reliability/                Real-World File Reliability & Adversarial Benchmark (104 cases)
-├── tests/                          Comprehensive test suite (245 tests)
+├── tests/                          Comprehensive test suite (458 tests)
+│   ├── test_session_spoofing_prevention.py Phase 13 Session Security & Anti-Spoofing tests (14 tests)
 │   ├── test_analysis_pivot.py      Phase 9 Pivot & Heatmap test suite (21 tests)
-│   ├── test_analysis_multiturn.py  Phase 8 Multi-Turn Memory test suite (15 tests)
+│   ├── test_analysis_multiturn.py  Phase 8 Multi-Turn Memory test suite (19 tests)
+│   ├── test_top_n_analytics.py     Deterministic Top-N / Ranking test suite (32 tests)
 │   ├── test_analysis_v3.py         Phase 7 Advanced Analytics test suite
 │   ├── test_analysis_v2.py         Phase 6 Statistical Operators test suite
-│   ├── test_analysis_compiler.py   Phase 3 Deterministic Compiler test suite
-│   ├── test_visualizer.py          Phase 4 Visualization Engine test suite
-│   ├── test_datasets.py            Phase 2 Dataset Ingestion & Profiling test suite
+│   ├── test_analysis_compiler.py   Phase 3 Deterministic Compiler test suite (31 tests)
+│   ├── test_visualization.py       Phase 4 Visualization Engine test suite (11 tests)
+│   ├── test_datasets.py            Phase 2 Dataset Ingestion & Profiling test suite (37 tests)
 │   ├── test_documents.py           Session Document QA & extraction test suite
 │   ├── test_document_query.py      Session Document retrieval test suite
 │   ├── test_chat_endpoint.py       End-to-end /chat API integration tests
@@ -268,20 +276,21 @@ Visit the application in your browser:
 The project includes an exhaustive automated test suite covering unit contracts, deterministic SQL compilation, security injection defenses, session isolation, multi-turn memory, and browser E2E flows, alongside an empirical reliability and adversarial stress benchmark.
 
 ```powershell
-# Run the complete core regression suite (245 tests)
-pytest -q
+# Run the complete core regression suite (458 tests)
+pytest -v --tb=short
 
-# Run Phase 9 cross-tab pivot & heatmap tests
+# Run Phase 13 session security & access-control suite (14 tests)
+pytest tests/test_session_spoofing_prevention.py -v
+
+# Run Phase 9 cross-tab pivot & heatmap tests (21 tests)
 pytest tests/test_analysis_pivot.py -v
 
-# Run analytical regression test suite (73 tests)
-pytest tests/test_analysis_compiler.py tests/test_analysis_v2.py tests/test_analysis_v2_compiler.py tests/test_analysis_v3.py tests/test_analysis_v3_compiler.py tests/test_analysis_multiturn.py -v
-
-# Run the complete Real-World File Reliability & Adversarial Benchmark (104 cases)
-python evaluation/reliability/run_benchmark.py
+# Run the 35-Case End-to-End Evaluation Suite (40 cases)
+python evaluation/eval_35_cases.py
 ```
 
-**Core Regression Status:** **`245 passed, 0 failures, 0 regressions`**.
+**Core Regression Status:** **`458 passed, 0 failures, 0 errors, 0 regressions`**.
+**Evaluation Status:** **`40/40 passed (100% pass rate; 100% Reliability, 100% Support, 100% Analytics, 100% Document)`**.
 **Reliability Benchmark Status:** **`104/104 passed (100% extraction fidelity, 100% prompt-injection resistance, 0.0% cross-session leakage)`**.
 
 ---

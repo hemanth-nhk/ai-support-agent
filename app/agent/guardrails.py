@@ -22,6 +22,7 @@ VALID_TOOLS = {
     "search_orders",
     "retrieve_document_chunks",
     "execute_analysis_plan",
+    "assess_return_eligibility",
 }
 
 MAX_MESSAGE_LENGTH = 500
@@ -36,6 +37,7 @@ class ResponseEnvelope(BaseModel):
     chart: Optional[dict] = None
     table: Optional[dict] = None
     pivot: Optional[dict] = None
+    active_analysis_plan: Optional[dict] = None
 
     @field_validator("status")
     @classmethod
@@ -75,6 +77,8 @@ class ResponseEnvelope(BaseModel):
                 raise ValueError("DOCUMENT_QUERY with status 'ok' must use 'retrieve_document_chunks'")
             if self.intent == "DATASET_ANALYSIS" and self.tool_used != "execute_analysis_plan":
                 raise ValueError("DATASET_ANALYSIS with status 'ok' must use 'execute_analysis_plan'")
+            if self.intent == "ORDER_POLICY_CHECK" and self.tool_used not in ("assess_return_eligibility", "none"):
+                raise ValueError("ORDER_POLICY_CHECK with status 'ok' must use 'assess_return_eligibility'")
             if self.intent == "GENERAL" and self.tool_used != "none":
                 raise ValueError("GENERAL intent must have tool_used 'none'")
 
@@ -91,6 +95,8 @@ class ResponseEnvelope(BaseModel):
             raise ValueError("retrieve_document_chunks tool can only be used with DOCUMENT_QUERY")
         if self.tool_used == "execute_analysis_plan" and self.intent != "DATASET_ANALYSIS":
             raise ValueError("execute_analysis_plan tool can only be used with DATASET_ANALYSIS")
+        if self.tool_used == "assess_return_eligibility" and self.intent != "ORDER_POLICY_CHECK":
+            raise ValueError("assess_return_eligibility tool can only be used with ORDER_POLICY_CHECK")
 
         # 3. Out-of-scope must not use tools
         if self.status == "out_of_scope" and self.tool_used != "none":
@@ -136,6 +142,7 @@ def build_validated_envelope(agent_state: dict) -> dict:
             chart=agent_state.get("chart_artifact"),
             table=agent_state.get("analysis_table"),
             pivot=agent_state.get("pivot_table"),
+            active_analysis_plan=agent_state.get("active_analysis_plan") or agent_state.get("analysis_plan"),
         )
         return envelope.model_dump()
     except ValidationError:

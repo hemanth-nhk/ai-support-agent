@@ -223,25 +223,28 @@ def test_resolve_chart_file_path_traversal_rejection():
 
 
 def test_get_chart_endpoint_serves_valid_png_and_blocks_traversal():
+    from app.api.session_security import sign_session_id
     session_id = str(uuid.uuid4())
+    token = sign_session_id(session_id)
+    headers = {"X-Session-Token": token}
     rows = [{"cat": "Widget", "val": 42.0}]
     res = _make_dummy_result(rows, ["cat", "val"], "bar")
     artifact = render_chart(res, "bar", session_id)
 
     # 1. Valid retrieval
-    resp = client.get(f"/charts/{session_id}/{artifact.chart_id}")
+    resp = client.get(f"/charts/{session_id}/{artifact.chart_id}", headers=headers)
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/png"
     assert resp.content.startswith(PNG_MAGIC_BYTES)
 
     # 2. Non-existent chart -> 404
     missing_id = str(uuid.uuid4())
-    resp_404 = client.get(f"/charts/{session_id}/{missing_id}")
+    resp_404 = client.get(f"/charts/{session_id}/{missing_id}", headers=headers)
     assert resp_404.status_code == 404
 
     # 3. Traversal attack via URL -> 400 / 404 (never 200 or 500)
-    resp_traversal = client.get(f"/charts/..%2F..%2Fsession/{artifact.chart_id}")
-    assert resp_traversal.status_code in (400, 404)
+    resp_traversal = client.get(f"/charts/..%2F..%2Fsession/{artifact.chart_id}", headers=headers)
+    assert resp_traversal.status_code in (400, 401, 403, 404)
 
     resp_traversal_chart = client.get(f"/charts/{session_id}/..%2F..%2Fsecret")
     assert resp_traversal_chart.status_code in (400, 404)
@@ -309,3 +312,59 @@ def test_chat_response_contract_no_base64(monkeypatch):
     assert img_resp.status_code == 200
     assert img_resp.headers["content-type"] == "image/png"
     assert img_resp.content.startswith(PNG_MAGIC_BYTES)
+
+
+def test_chart_endpoint_serves_conversation_chart_with_session_cookie():
+    """
+    Verifies that when a chart is generated within an analytical conversation (conv_id != session_id),
+    the chart endpoint authorizes retrieval via the owner's session cookie / token and blocks
+    unauthorized or unauthenticated callers.
+    """
+    from app.database.connection import get_db
+    from app.repositories import conversation_repository as repo
+    from app.api.session_security import sign_session_id, COOKIE_NAME
+
+    owner_session = str(uuid.uuid4())
+    conv_id = str(uuid.uuid4())
+
+    # 1. Register conversation in database owned by owner_session
+    with get_db() as conn:
+        repo.create_conversation(
+            conn,
+            conversation_id=conv_id,
+            title="Conversation Chart Test",
+            workspace_mode="dataset",
+            session_id=owner_session,
+        )
+
+    # 2. Render chart under conversation_id (as nodes.py does)
+    rows = [{"cat": "Widget", "val": 42.0}, {"cat": "Gadget", "val": 88.0}]
+    res = _make_dummy_result(rows, ["cat", "val"], "bar")
+    artifact = render_chart(res, "bar", session_id=conv_id)
+    assert artifact.url == f"/charts/{conv_id}/{artifact.chart_id}"
+
+    # 3. Owner retrieves chart using X-Session-Token header: MUST be 200 OK
+    token = sign_session_id(owner_session)
+    resp_header = client.get(artifact.url, headers={"X-Session-Token": token})
+    assert resp_header.status_code == 200
+    assert resp_header.headers["content-type"] == "image/png"
+    assert resp_header.content.startswith(PNG_MAGIC_BYTES)
+
+    # 4. Owner retrieves chart using HttpOnly app_session_token cookie: MUST be 200 OK
+    client.cookies.set(COOKIE_NAME, token)
+    resp_cookie = client.get(artifact.url)
+    assert resp_cookie.status_code == 200
+    assert resp_cookie.headers["content-type"] == "image/png"
+    assert resp_cookie.content.startswith(PNG_MAGIC_BYTES)
+    client.cookies.clear()
+
+    # 5. Attacker with distinct session token: MUST be 403 Forbidden
+    attacker_session = str(uuid.uuid4())
+    attacker_token = sign_session_id(attacker_session)
+    resp_attacker = client.get(artifact.url, headers={"X-Session-Token": attacker_token})
+    assert resp_attacker.status_code == 403
+    assert "Access denied" in resp_attacker.json()["detail"]
+
+    # 6. Unauthenticated client (no cookie, no token): MUST be 401 Unauthorized
+    resp_unauth = client.get(artifact.url)
+    assert resp_unauth.status_code == 401

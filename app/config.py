@@ -21,8 +21,9 @@ class Settings(BaseSettings):
     faq_dir: str = str(BASE_DIR / "data" / "faq")
     chroma_persist_dir: str = str(BASE_DIR / "data" / "chroma_store")
     embedding_model_name: str = "all-MiniLM-L6-v2"
-    rag_similarity_threshold: float = 0.35  # cosine distance threshold; tune per Phase 17 validation
+    rag_similarity_threshold: float = 0.42  # cosine distance threshold calibrated for all-MiniLM-L6-v2
     rag_top_k: int = 3
+    uploaded_doc_similarity_threshold: float | None = None  # None allows broad document questions; calibrated for empirical distance tuning
 
     # --- LLM (Ollama, local only) ---
     ollama_model: str = "llama3.2:3b"
@@ -36,6 +37,9 @@ class Settings(BaseSettings):
     datasets_dir: str = str(BASE_DIR / "data" / "datasets")
     charts_dir: str = str(BASE_DIR / "data" / "charts")
     max_dataset_file_size_mb: int = 50
+
+    # --- Session Security ---
+    session_secret_key: str = ""
 
 
 settings = Settings()

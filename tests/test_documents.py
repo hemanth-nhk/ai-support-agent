@@ -358,13 +358,18 @@ def test_document_deletion_endpoint(client_with_mock_chroma):
 
 def test_delete_unknown_document_returns_404(client_with_mock_chroma):
     client, _, _ = client_with_mock_chroma
-    res = client.delete("/documents/non-existent-doc-id")
+    from app.api.session_security import sign_session_id
+    token = sign_session_id("any-session")
+    res = client.delete(
+        "/documents/non-existent-doc-id?session_id=any-session",
+        headers={"X-Session-Token": token},
+    )
     assert res.status_code == 404
     assert "not found" in res.json()["detail"].lower()
 
 
 def test_delete_with_session_mismatch_returns_404(client_with_mock_chroma):
-    client, _, _ = client_with_mock_chroma
+    client, persist_dir, stub_fn = client_with_mock_chroma
     upload_res = client.post(
         "/documents/upload",
         files={"file": ("owner.txt", b"Owner data", "text/plain")},
@@ -373,9 +378,66 @@ def test_delete_with_session_mismatch_returns_404(client_with_mock_chroma):
     assert upload_res.status_code == 201
     doc_id = upload_res.json()["document_id"]
 
-    # Attempt delete with wrong session_id
+    # Attempt delete with wrong session_id (mismatch rejected with 403 Forbidden)
     del_res = client.delete(f"/documents/{doc_id}?session_id=wrong-session")
-    assert del_res.status_code == 404
+    assert del_res.status_code == 403
+
+    # Verify document is still intact in Chroma for real-session
+    remaining = retrieve_document_chunks(
+        session_id="real-session",
+        query="owner",
+        persist_dir=persist_dir,
+        embedding_fn=stub_fn,
+    )
+    assert len(remaining) >= 1
+
+
+def test_delete_document_missing_session_id_rejected(client_with_mock_chroma):
+    client, persist_dir, stub_fn = client_with_mock_chroma
+    upload_res = client.post(
+        "/documents/upload",
+        files={"file": ("protected.txt", b"Protected content", "text/plain")},
+        data={"session_id": "session-owner"},
+    )
+    assert upload_res.status_code == 201
+    doc_id = upload_res.json()["document_id"]
+
+    # Attempt delete omitting session_id -> rejected with 422
+    del_res = client.delete(f"/documents/{doc_id}")
+    assert del_res.status_code == 422
+
+    # Verify document was not deleted
+    remaining = retrieve_document_chunks(
+        session_id="session-owner",
+        query="protected",
+        persist_dir=persist_dir,
+        embedding_fn=stub_fn,
+    )
+    assert len(remaining) >= 1
+
+
+def test_delete_document_empty_session_id_rejected(client_with_mock_chroma):
+    client, persist_dir, stub_fn = client_with_mock_chroma
+    upload_res = client.post(
+        "/documents/upload",
+        files={"file": ("protected2.txt", b"Protected content 2", "text/plain")},
+        data={"session_id": "session-owner-2"},
+    )
+    assert upload_res.status_code == 201
+    doc_id = upload_res.json()["document_id"]
+
+    # Attempt delete with empty string or whitespace session_id
+    del_res_empty = client.delete(f"/documents/{doc_id}?session_id=")
+    assert del_res_empty.status_code == 422
+
+    del_res_whitespace = client.delete(f"/documents/{doc_id}?session_id=%20%20")
+    assert del_res_whitespace.status_code in (400, 422)
+
+    # Direct service call without valid session_id raises DocumentValidationError
+    with pytest.raises(DocumentValidationError):
+        delete_document(document_id=doc_id, session_id="", persist_dir=persist_dir, embedding_fn=stub_fn)
+    with pytest.raises(DocumentValidationError):
+        delete_document(document_id=doc_id, session_id="   ", persist_dir=persist_dir, embedding_fn=stub_fn)
 
 
 # ============================================================================
@@ -423,6 +485,21 @@ def test_upload_empty_file_returns_400(client_with_mock_chroma):
     )
     assert res.status_code == 400
     assert "empty" in res.json()["detail"].lower()
+
+
+def test_upload_early_size_limit_rejection(client_with_mock_chroma, monkeypatch):
+    """Verifies that oversized uploads are terminated with HTTP 413 before full buffering (SEC-01)."""
+    client, _, _ = client_with_mock_chroma
+    from app.services import document_service
+    monkeypatch.setattr(document_service, "MAX_FILE_SIZE_BYTES", 128)
+    oversized_data = b"A" * 256
+    res = client.post(
+        "/documents/upload",
+        files={"file": ("too_big.txt", oversized_data, "text/plain")},
+        data={"session_id": "session-oversized"},
+    )
+    assert res.status_code == 413
+    assert "exceeds maximum allowed size" in res.json()["detail"].lower()
 
 
 # ============================================================================

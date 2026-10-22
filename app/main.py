@@ -10,6 +10,7 @@ from app.logging_config import configure_logging
 from app.api.rest import router as rest_router
 from app.api.documents import router as documents_router
 from app.api.datasets import router as datasets_router
+from app.api.conversations import router as conversations_router
 from app.api.graphql import schema
 
 configure_logging()
@@ -19,6 +20,7 @@ app = FastAPI(title=settings.app_name)
 app.include_router(rest_router)
 app.include_router(documents_router)
 app.include_router(datasets_router)
+app.include_router(conversations_router)
 app.include_router(GraphQLRouter(schema), prefix="/graphql")
 
 app.mount(

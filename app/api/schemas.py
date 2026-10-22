@@ -20,6 +20,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     document_id: Optional[str] = None
     dataset_id: Optional[str] = None
+    workspace_mode: Optional[str] = Field(default=None, description="Active workspace mode: 'support' or 'dataset'")
 
 
 class ChatResponse(BaseModel):
@@ -36,12 +37,15 @@ class ChatResponse(BaseModel):
     chart: Optional[ChartArtifact] = None
     table: Optional[AnalysisTable] = None
     pivot: Optional[PivotResult] = None
+    active_analysis_plan: Optional[dict] = None
 
 
 class DocumentUploadResponse(BaseModel):
     document_id: str
     filename: str
     chunk_count: int
+    session_id: Optional[str] = None
+    session_token: Optional[str] = None
 
 
 class DocumentDeleteResponse(BaseModel):

@@ -14,6 +14,9 @@
   const STORAGE_KEY_THEME = 'support_theme';
   const STORAGE_KEY_API_KEY = 'support_api_key';
   const STORAGE_KEY_WORKSPACE_MODE = 'support_workspace_mode';
+  const STORAGE_KEY_ACTIVE_ANALYSIS = 'support_active_analysis_id';
+  const STORAGE_KEY_SESSION_TOKEN = 'support_session_token';
+  const STORAGE_KEY_SIDEBAR_WIDTH = 'support_sidebar_width';
 
   // --- UI-2: Top-Level Workspace Modes ---
   const WORKSPACE_MODE_SUPPORT = 'support';
@@ -31,9 +34,21 @@
   let threads = [];
   let activeThreadId = '';
   let currentSessionId = '';
+  let currentSessionToken = localStorage.getItem(STORAGE_KEY_SESSION_TOKEN) || '';
   let activeDemoCustomer = '1';
+
+  function getAuthHeaders(baseHeaders = {}) {
+    const headers = { ...baseHeaders };
+    if (currentSessionToken) {
+      headers['X-Session-Token'] = currentSessionToken;
+    }
+    return headers;
+  }
   let isLoading = false;
   let pendingDeleteThreadId = null;
+  let pendingDeleteAnalysisId = null;
+  let pendingDeleteDatasetId = null;
+  let pendingDeleteDatasetSessionId = null;
   let activeModalTriggerEl = null;
 
   function restoreModalFocus() {
@@ -129,6 +144,14 @@
   const workspaceUploadBtn = document.getElementById('workspaceUploadBtn');
   const workspaceUploadTriggerBtn = document.getElementById('workspaceUploadTriggerBtn');
   const workspaceSwitchBtn = document.getElementById('workspaceSwitchBtn');
+  const workspaceRemoveBtn = document.getElementById('workspaceRemoveBtn');
+  const workspaceDeleteDatasetBtn = document.getElementById('workspaceDeleteDatasetBtn');
+  const sidebarRemoveDatasetBtn = document.getElementById('sidebarRemoveDatasetBtn');
+  const switchDatasetModal = document.getElementById('switchDatasetModal');
+  const switchDatasetList = document.getElementById('switchDatasetList');
+  const switchUploadNewBtn = document.getElementById('switchUploadNewBtn');
+  const cancelSwitchDatasetBtn = document.getElementById('cancelSwitchDatasetBtn');
+  const closeSwitchDatasetModalBtn = document.getElementById('closeSwitchDatasetModalBtn');
   const workspaceEmptyState = document.getElementById('workspaceEmptyState');
   const workspaceContentCard = document.getElementById('workspaceContentCard');
   const profileFormatTag = document.getElementById('profileFormatTag');
@@ -164,6 +187,8 @@
   // UI-1: Full Result Table Modal Elements
   const tableExpandModal = document.getElementById('tableExpandModal');
   const modalTableTitle = document.getElementById('modalTableTitle');
+  const modalTableSubtitle = document.getElementById('modalTableSubtitle');
+  const modalTableMeta = document.getElementById('modalTableMeta');
   const modalTableRowCount = document.getElementById('modalTableRowCount');
   const modalTableExportBtn = document.getElementById('modalTableExportBtn');
   const closeTableModalBtn = document.getElementById('closeTableModalBtn');
@@ -179,6 +204,7 @@
   const datasetChatEmptyState = document.getElementById('datasetChatEmptyState');
   const datasetChatTurns = document.getElementById('datasetChatTurns');
   const clearDatasetChatBtn = document.getElementById('clearDatasetChatBtn');
+  const deleteDatasetChatBtn = document.getElementById('deleteDatasetChatBtn');
   const datasetComposerChips = document.getElementById('datasetComposerChips');
   const datasetChatForm = document.getElementById('datasetChatForm');
   const datasetChatInput = document.getElementById('datasetChatInput');
@@ -186,10 +212,18 @@
   const datasetSendBtnText = document.getElementById('datasetSendBtnText');
   const datasetSendSpinner = document.getElementById('datasetSendSpinner');
 
+  // UI-3: Dataset Conversation History Elements
+  const sidebarNewAnalysisBtn = document.getElementById('sidebarNewAnalysisBtn');
+  const workspaceNewAnalysisBtn = document.getElementById('workspaceNewAnalysisBtn');
+  const recentAnalysesList = document.getElementById('recentAnalysesList');
+  const recentAnalysesContainer = document.getElementById('recentAnalysesContainer');
+
   let activeDataset = null;
   let activeDatasetTurns = [];
   let isDatasetLoading = false;
   let activeModalTableData = { columns: [], rows: [], title: '' };
+  let activeAnalysisId = '';
+  let analysesList = [];
 
 
   // Delete Confirmation Modal Elements
@@ -554,9 +588,10 @@
     updateAttachmentUI(null, true, file.name);
 
     try {
+      const uploadSessionId = (thread && thread.id) ? thread.id : currentSessionId;
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('session_id', currentSessionId);
+      formData.append('session_id', uploadSessionId);
 
       const res = await fetch('/documents/upload', {
         method: 'POST',
@@ -572,6 +607,12 @@
       }
 
       const data = await res.json();
+      if (data.session_token) {
+        currentSessionToken = data.session_token;
+        try {
+          localStorage.setItem(STORAGE_KEY_SESSION_TOKEN, data.session_token);
+        } catch (_) {}
+      }
       thread.attachment = {
         document_id: data.document_id,
         filename: data.filename,
@@ -599,8 +640,10 @@
     if (removeAttachmentBtn) removeAttachmentBtn.disabled = true;
 
     try {
-      const res = await fetch(`/documents/${encodeURIComponent(docId)}?session_id=${encodeURIComponent(currentSessionId)}`, {
+      const targetSessionId = (thread && thread.id) ? thread.id : currentSessionId;
+      const res = await fetch(`/documents/${encodeURIComponent(docId)}?session_id=${encodeURIComponent(targetSessionId)}`, {
         method: 'DELETE',
+        headers: getAuthHeaders(),
       });
 
       if (res.ok || res.status === 404) {
@@ -681,8 +724,22 @@
     }
 
     let thread = getActiveThread();
-    if (!thread) {
+    if (!thread && !isWorkspace) {
       thread = createNewThread();
+    }
+
+    let targetSessionId = currentSessionId;
+    if (!targetSessionId) {
+      if (isWorkspace && activeAnalysisId) {
+        targetSessionId = activeAnalysisId;
+      } else if (!isWorkspace && thread) {
+        targetSessionId = thread.id;
+      } else if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        targetSessionId = crypto.randomUUID();
+      } else {
+        targetSessionId = 'sess_' + Date.now();
+      }
+      currentSessionId = targetSessionId;
     }
 
     if (isWorkspace) {
@@ -695,7 +752,9 @@
     try {
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('session_id', currentSessionId);
+      if (targetSessionId) {
+        formData.append('session_id', targetSessionId);
+      }
 
       const res = await fetch('/datasets/upload', {
         method: 'POST',
@@ -716,19 +775,32 @@
       }
 
       const data = await res.json();
+      if (data.session_token) {
+        currentSessionToken = data.session_token;
+        try {
+          localStorage.setItem(STORAGE_KEY_SESSION_TOKEN, data.session_token);
+        } catch (_) {}
+      }
+      if (!data.session_id && targetSessionId) {
+        data.session_id = targetSessionId;
+      }
       activeDataset = data;
 
-      thread.dataset = {
-        dataset_id: data.dataset_id,
-        filename: data.filename,
-        row_count: data.row_count,
-        column_count: data.column_count,
-      };
-      thread.updatedAt = Date.now();
-      saveThreadsToStorage();
+      if (isWorkspace) {
+        await createNewAnalysis(data);
+      } else {
+        thread.dataset = {
+          dataset_id: data.dataset_id,
+          filename: data.filename,
+          row_count: data.row_count,
+          column_count: data.column_count,
+        };
+        thread.updatedAt = Date.now();
+        saveThreadsToStorage();
 
-      updateDatasetAttachmentUI(thread.dataset);
-      renderWorkspaceDataset(data);
+        updateDatasetAttachmentUI(thread.dataset);
+        renderWorkspaceDataset(data);
+      }
       showToast(`Uploaded ${data.filename} (${data.row_count.toLocaleString()} rows, ${data.column_count} columns)`);
     } catch (err) {
       console.error('Dataset upload error:', err);
@@ -806,29 +878,69 @@
     showToast('Exported raw CSV');
   }
 
+  function isNumericColumn(colIdx, allRows) {
+    if (!allRows || allRows.length === 0) return false;
+    let hasNonNull = false;
+    for (let r = 0; r < allRows.length; r++) {
+      const val = allRows[r][colIdx];
+      if (val !== null && val !== undefined && val !== '') {
+        hasNonNull = true;
+        if (typeof val === 'number') continue;
+        const num = Number(val);
+        if (isNaN(num)) return false;
+      }
+    }
+    return hasNonNull;
+  }
+
   function openTableModal(columns, rows, title = 'Query Result Data') {
     if (!tableExpandModal) return;
     activeModalTriggerEl = document.activeElement;
     activeModalTableData = { columns, rows, title };
 
-    if (modalTableTitle) modalTableTitle.textContent = title;
+    if (modalTableTitle) modalTableTitle.textContent = 'View Results';
+    if (modalTableSubtitle) modalTableSubtitle.textContent = title;
+    if (modalTableMeta) {
+      const rowCountText = `${rows.length} ${rows.length === 1 ? 'row' : 'rows'}`;
+      const colCountText = `${columns.length} ${columns.length === 1 ? 'column' : 'columns'}`;
+      modalTableMeta.textContent = `${rowCountText} · ${colCountText}`;
+    }
     if (modalTableRowCount) modalTableRowCount.textContent = `${rows.length} rows`;
     if (modalTableSearchInput) modalTableSearchInput.value = '';
-    if (modalTableFilteredStatus) modalTableFilteredStatus.textContent = `Showing all ${rows.length} rows`;
+    if (modalTableFilteredStatus) {
+      modalTableFilteredStatus.textContent = '';
+      modalTableFilteredStatus.style.display = 'none';
+    }
 
-    renderModalTableRows(columns, rows);
+    renderModalTableRows(columns, rows, rows);
     tableExpandModal.style.display = 'flex';
     if (modalTableSearchInput) modalTableSearchInput.focus();
   }
 
-  function renderModalTableRows(columns, rows) {
+  function renderModalTableRows(columns, rows, allRows = rows) {
+    const numericFlags = columns.map((_, idx) => isNumericColumn(idx, allRows));
+
     if (modalResultThead) {
-      modalResultThead.innerHTML = `<tr>${columns.map((c) => `<th>${escapeHtml(String(c))}</th>`).join('')}</tr>`;
+      modalResultThead.innerHTML = `<tr>${columns
+        .map((c, idx) => `<th class="${numericFlags[idx] ? 'num-col' : ''}">${escapeHtml(formatCleanDisplayLabel(String(c)))}</th>`)
+        .join('')}</tr>`;
     }
     if (modalResultTbody) {
-      modalResultTbody.innerHTML = rows
-        .map((r) => `<tr>${r.map((v) => `<td>${escapeHtml(formatCellValue(v))}</td>`).join('')}</tr>`)
-        .join('');
+      if (!rows || rows.length === 0) {
+        modalResultTbody.innerHTML = `<tr><td colspan="${columns.length}" class="table-empty-notice">No matching rows found</td></tr>`;
+      } else {
+        modalResultTbody.innerHTML = rows
+          .map(
+            (r) =>
+              `<tr>${r
+                .map(
+                  (v, idx) =>
+                    `<td class="${numericFlags[idx] ? 'num-col' : ''}">${escapeHtml(formatCellValue(v))}</td>`
+                )
+                .join('')}</tr>`
+          )
+          .join('');
+      }
     }
   }
 
@@ -836,18 +948,20 @@
     if (!activeModalTableData || !activeModalTableData.rows) return;
     const term = (modalTableSearchInput ? modalTableSearchInput.value : '').toLowerCase().trim();
     if (!term) {
-      renderModalTableRows(activeModalTableData.columns, activeModalTableData.rows);
+      renderModalTableRows(activeModalTableData.columns, activeModalTableData.rows, activeModalTableData.rows);
       if (modalTableFilteredStatus) {
-        modalTableFilteredStatus.textContent = `Showing all ${activeModalTableData.rows.length} rows`;
+        modalTableFilteredStatus.textContent = '';
+        modalTableFilteredStatus.style.display = 'none';
       }
       return;
     }
     const filtered = activeModalTableData.rows.filter((row) =>
       row.some((cell) => cell !== null && cell !== undefined && String(cell).toLowerCase().includes(term))
     );
-    renderModalTableRows(activeModalTableData.columns, filtered);
+    renderModalTableRows(activeModalTableData.columns, filtered, activeModalTableData.rows);
     if (modalTableFilteredStatus) {
-      modalTableFilteredStatus.textContent = `Showing ${filtered.length} of ${activeModalTableData.rows.length} rows`;
+      modalTableFilteredStatus.textContent = `${filtered.length} of ${activeModalTableData.rows.length} rows`;
+      modalTableFilteredStatus.style.display = 'inline-block';
     }
   }
 
@@ -857,39 +971,149 @@
     restoreModalFocus();
   }
 
+  function formatCleanDisplayLabel(name) {
+    if (!name) return 'Value';
+    let raw = String(name).trim();
+    let prefix = '';
+    const lower = raw.toLowerCase();
+
+    if (lower.startsWith('sum_')) {
+      prefix = 'Total';
+      raw = raw.substring(4).trim();
+    } else if (lower.startsWith('avg_')) {
+      prefix = 'Average';
+      raw = raw.substring(4).trim();
+    } else if (lower.startsWith('min_')) {
+      prefix = 'Minimum';
+      raw = raw.substring(4).trim();
+    } else if (lower.startsWith('max_')) {
+      prefix = 'Maximum';
+      raw = raw.substring(4).trim();
+    } else if (lower.startsWith('count_distinct_')) {
+      prefix = 'Distinct';
+      raw = raw.substring(15).trim();
+    } else if (lower.startsWith('count_')) {
+      prefix = 'Count of';
+      raw = raw.substring(6).trim();
+    }
+
+    if (prefix) {
+      const words = raw.replace(/_/g, ' ').split(/\s+/);
+      if (words.length > 0 && words[0].toLowerCase() === prefix.toLowerCase()) {
+        raw = words.join(' ');
+      } else {
+        raw = `${prefix} ${words.join(' ')}`;
+      }
+    } else {
+      raw = raw.replace(/_/g, ' ');
+    }
+
+    return raw.split(/\s+/).map((p) => (p.toLowerCase() === p ? p.charAt(0).toUpperCase() + p.slice(1) : p)).join(' ');
+  }
+
+  function getBaseMetricColumnName(colName) {
+    if (!colName) return 'Value';
+    let s = String(colName).trim();
+    s = s.replace(/^(?:sum_|avg_|min_|max_|count_distinct_|count_)/i, '');
+    s = s.replace(/^(?:total|average|minimum|maximum|distinct|count\s+of)\s+/i, '');
+    return s.replace(/_/g, ' ').trim();
+  }
+
   function deriveAstBadgeText(query, data) {
-    if (!data) return 'Analysis: DATASET_ANALYSIS';
+    if (!data) return 'DATASET_ANALYSIS';
+
+    // 1. Authoritative AST derivation from plan if provided by backend
+    const plan = data.active_analysis_plan || data.analysis_plan;
+    if (plan && typeof plan === 'object') {
+      if (plan.pivot) {
+        const agg = (plan.pivot.aggregation || 'SUM').toUpperCase();
+        const val = getBaseMetricColumnName(plan.pivot.metric || 'Value');
+        const row = plan.pivot.row_dimension || 'Dimension';
+        const col = plan.pivot.column_dimension || 'Category';
+        return `${agg}(${val}) • Rows: ${row} • Cols: ${col}`;
+      }
+
+      let badge = '';
+      if (Array.isArray(plan.aggregations) && plan.aggregations.length > 0) {
+        const firstAgg = plan.aggregations[0];
+        const fn = (firstAgg.function || 'sum').toUpperCase();
+        const colName = getBaseMetricColumnName(firstAgg.column || 'Value');
+        badge = `${fn}(${colName})`;
+      } else if (Array.isArray(plan.rolling_windows) && plan.rolling_windows.length > 0) {
+        const rw = plan.rolling_windows[0];
+        badge = `Rolling ${rw.function.toUpperCase()}(${rw.column})`;
+      } else if (Array.isArray(plan.cumulative_metrics) && plan.cumulative_metrics.length > 0) {
+        const cm = plan.cumulative_metrics[0];
+        badge = `Cumulative ${cm.function.toUpperCase()}(${cm.column || ''})`;
+      } else {
+        badge = 'DATASET_ANALYSIS';
+      }
+
+      if (Array.isArray(plan.group_by) && plan.group_by.length > 0) {
+        const dim = plan.group_by[0].column;
+        if (dim) badge += ` • by ${dim.replace(/_/g, ' ')}`;
+      }
+
+      if (Array.isArray(plan.order_by) && plan.order_by.length > 0) {
+        const ob = plan.order_by[0];
+        badge += ob.descending ? ' • DESC' : ' • ASC';
+      }
+
+      if (plan.limit && plan.limit < 50) {
+        badge += ` • Limit ${plan.limit}`;
+      } else if (data.table && Array.isArray(data.table.rows) && (data.table.rows.length <= 10 && (plan.limit <= 50 || !plan.limit))) {
+        badge += ` • Limit ${data.table.rows.length}`;
+      }
+
+      return badge;
+    }
+
     if (data.pivot) {
       const agg = (data.pivot.aggregation || 'SUM').toUpperCase();
-      const val = data.pivot.value_column || 'Value';
+      const val = getBaseMetricColumnName(data.pivot.metric || data.pivot.value_column || 'Value');
       const row = data.pivot.row_dimension || 'Dimension';
       const col = data.pivot.column_dimension || 'Category';
-      return `Analysis: ${agg}(${val}) • Rows: ${row} • Cols: ${col}`;
+      return `${agg}(${val}) • Rows: ${row} • Cols: ${col}`;
     }
 
     if (data.table && Array.isArray(data.table.columns) && data.table.columns.length > 0) {
-      const q = (query || '').toLowerCase();
+      let contextQuery = (query || '').trim();
+      const isMutationOnly = /^(?:bar\s*chart|line\s*chart|scatter|histogram|heatmap|chart|table|plot\s*this|visualize\s*this|show\s*this)\b/i.test(contextQuery);
+      if (isMutationOnly && typeof activeDatasetTurns !== 'undefined' && Array.isArray(activeDatasetTurns)) {
+        for (let i = activeDatasetTurns.length - 1; i >= 0; i--) {
+          const t = activeDatasetTurns[i];
+          if (t && t.userQuery && !/^(?:bar\s*chart|line\s*chart|chart|table|plot\s*this|visualize)/i.test(t.userQuery)) {
+            contextQuery = t.userQuery;
+            break;
+          }
+        }
+      }
+
+      const q = contextQuery.toLowerCase();
+      const resp = (data.response || '').toLowerCase();
       const cols = data.table.columns;
 
-      // Determine aggregation
-      let agg = 'SUM';
-      if (q.includes('average') || q.includes('avg')) agg = 'AVG';
-      else if (q.includes('count')) agg = 'COUNT';
-      else if (q.includes('maximum') || q.includes('max')) agg = 'MAX';
-      else if (q.includes('minimum') || q.includes('min')) agg = 'MIN';
-
-      // Find metric column and dimension column
       let metricCol = '';
       let dimCol = '';
 
       for (const col of cols) {
         const lower = col.toLowerCase();
         if (
+          lower.startsWith('sum_') ||
+          lower.startsWith('avg_') ||
+          lower.startsWith('min_') ||
+          lower.startsWith('max_') ||
+          lower.startsWith('count_') ||
+          lower.startsWith('total') ||
+          lower.startsWith('average') ||
+          lower.startsWith('minimum') ||
+          lower.startsWith('maximum') ||
           lower.includes('sales') ||
           lower.includes('amount') ||
-          lower.includes('total') ||
           lower.includes('price') ||
-          lower.includes('quantity')
+          lower.includes('quantity') ||
+          lower.includes('revenue') ||
+          lower.includes('profit')
         ) {
           if (!metricCol) metricCol = col;
         } else {
@@ -899,56 +1123,427 @@
       if (!dimCol && cols.length > 0) dimCol = cols[0];
       if (!metricCol && cols.length > 1) metricCol = cols[1];
 
-      // Formulate AST description
-      let badge = metricCol ? `Analysis: ${agg}(${metricCol})` : `Analysis: ${agg}`;
-      if (dimCol) badge += ` • by ${dimCol}`;
+      let agg = 'SUM';
+      const rawMetric = metricCol || (cols.length > 1 ? cols[1] : cols[0]);
+      const lowerRawMetric = rawMetric.toLowerCase();
 
-      // Order & Limit
-      const isTop = q.includes('top');
-      const isBottom = q.includes('bottom');
-      const isDesc = isTop || q.includes('desc') || q.includes('highest');
-      const isAsc = isBottom || q.includes('asc') || q.includes('lowest');
+      if (lowerRawMetric.startsWith('avg_') || lowerRawMetric.startsWith('average') || q.includes('average') || q.includes('avg')) {
+        agg = 'AVG';
+      } else if (lowerRawMetric.startsWith('count_') || lowerRawMetric.startsWith('count') || q.includes('count')) {
+        agg = 'COUNT';
+      } else if (lowerRawMetric.startsWith('max_') || lowerRawMetric.startsWith('maximum') || q.includes('maximum') || q.includes('max')) {
+        agg = 'MAX';
+      } else if (lowerRawMetric.startsWith('min_') || lowerRawMetric.startsWith('minimum') || q.includes('minimum') || q.includes('min')) {
+        agg = 'MIN';
+      }
 
-      if (isDesc) badge += ' • DESC';
-      else if (isAsc) badge += ' • ASC';
+      const cleanMetric = getBaseMetricColumnName(metricCol || 'Value');
+      const cleanDim = dimCol ? dimCol.replace(/_/g, ' ') : '';
 
-      // Limit detection
+      let badge = cleanMetric ? `${agg}(${cleanMetric})` : agg;
+      if (cleanDim) badge += ` • by ${cleanDim}`;
+
+      const isAsc = q.includes('asc') || q.includes('ascending') || q.includes('lowest') || q.includes('least') || q.includes('bottom') || q.includes('worst');
+      const isDesc = !isAsc && (q.includes('desc') || q.includes('descending') || q.includes('top') || q.includes('highest') || q.includes('most') || q.includes('best') || resp.includes('highest'));
+
+      if (isAsc) badge += ' • ASC';
+      else if (isDesc) badge += ' • DESC';
+
       const limitMatch = q.match(/\b(?:top|limit|first|bottom)\s*(\d+)\b/i);
       if (limitMatch && limitMatch[1]) {
         badge += ` • Limit ${limitMatch[1]}`;
-      } else if (data.table.rows && data.table.rows.length === 5 && isTop) {
-        badge += ' • Limit 5';
+      } else {
+        const respLimitMatch = resp.match(/across\s+(\d+)\b/i);
+        if (respLimitMatch && respLimitMatch[1]) {
+          badge += ` • Limit ${respLimitMatch[1]}`;
+        } else if (data.table.rows && (data.table.rows.length === 5 || (data.table.rows.length <= 10 && (isDesc || isAsc)))) {
+          badge += ` • Limit ${data.table.rows.length}`;
+        }
       }
 
       return badge;
     }
 
-    return `Analysis: ${data.intent || 'DATASET_ANALYSIS'} • ${data.tool_used || 'query_dataset'}`;
+    return `${data.intent || 'DATASET_ANALYSIS'} • ${data.tool_used || 'query_dataset'}`;
   }
 
-  function getDatasetTurnsStorageKey(datasetId) {
-    return `support_dataset_turns_${datasetId}`;
-  }
-
-  function loadDatasetTurns(datasetId) {
-    if (!datasetId) return [];
+  function formatIsoTime(isoStr) {
+    if (!isoStr) return formatTime();
     try {
-      const raw = localStorage.getItem(getDatasetTurnsStorageKey(datasetId));
-      return raw ? JSON.parse(raw) : [];
+      const d = new Date(isoStr);
+      if (isNaN(d.getTime())) return formatTime();
+      return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     } catch (_) {
-      return [];
+      return formatTime();
     }
   }
 
-  function saveDatasetTurns(datasetId, turns) {
-    if (!datasetId) return;
+  let recentAnalysesAbortController = null;
+  let recentAnalysesRequestSeq = 0;
+  const deletedAnalysisIds = new Set();
+
+  async function loadRecentAnalyses() {
+    if (!recentAnalysesList) return;
+
+    if (recentAnalysesAbortController) {
+      recentAnalysesAbortController.abort();
+    }
+    recentAnalysesAbortController = new AbortController();
+    const reqSeq = ++recentAnalysesRequestSeq;
+
     try {
-      localStorage.setItem(getDatasetTurnsStorageKey(datasetId), JSON.stringify(turns));
-    } catch (_) {}
+      const res = await fetch('/conversations?workspace_mode=dataset', {
+        signal: recentAnalysesAbortController.signal,
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (reqSeq !== recentAnalysesRequestSeq) {
+        // Discard stale out-of-order response
+        return;
+      }
+      // Guarantee any conversation deleted during this session is never restored by stale responses
+      analysesList = Array.isArray(data) ? data.filter((c) => !deletedAnalysisIds.has(c.id)) : [];
+      renderRecentAnalysesList();
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        console.warn('Failed to fetch recent analyses', e);
+      }
+    }
   }
 
-  function scrollDatasetChatToBottom() {
-    if (datasetChatScrollArea) {
+  function renderRecentAnalysesList() {
+    if (!recentAnalysesList) return;
+    recentAnalysesList.innerHTML = '';
+    if (!analysesList || analysesList.length === 0) {
+      const emptyNote = document.createElement('div');
+      emptyNote.style.padding = '8px 10px';
+      emptyNote.style.fontSize = '0.74rem';
+      emptyNote.style.color = 'var(--text-muted)';
+      emptyNote.textContent = 'No previous analyses';
+      recentAnalysesList.appendChild(emptyNote);
+      return;
+    }
+
+    analysesList.forEach((conv) => {
+      const item = document.createElement('div');
+      item.className = `recent-analysis-item ${conv.id === activeAnalysisId ? 'active' : ''}`;
+
+      const content = document.createElement('div');
+      content.className = 'recent-chat-content';
+      content.setAttribute('role', 'button');
+      content.setAttribute('tabindex', '0');
+      content.setAttribute('aria-label', `Open analysis: ${conv.title || 'Untitled'}`);
+
+      const timeStr = conv.updated_at ? formatIsoTime(conv.updated_at) : '';
+      const datasetTag = conv.dataset_id ? conv.dataset_id.slice(0, 6) : '';
+
+      content.innerHTML = `
+        <div class="recent-chat-text" style="flex: 1; overflow: hidden;">
+          <span class="recent-chat-title" title="${escapeHtml(conv.title || 'Analysis')}">${escapeHtml(conv.title || 'Analysis')}</span>
+          <span class="recent-chat-time">${escapeHtml(timeStr)}</span>
+        </div>
+        ${datasetTag ? `<span class="recent-analysis-badge" title="Bound Dataset: ${conv.dataset_id}">ds:${escapeHtml(datasetTag)}</span>` : ''}
+      `;
+
+      content.addEventListener('click', () => {
+        switchAnalyticalConversation(conv.id);
+      });
+      content.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          switchAnalyticalConversation(conv.id);
+        }
+      });
+      item.appendChild(content);
+
+      const actions = document.createElement('div');
+      actions.className = 'item-action-btns';
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'item-micro-btn danger';
+      delBtn.title = 'Delete analysis';
+      delBtn.setAttribute('aria-label', `Delete analysis: ${conv.title || 'Untitled'}`);
+      delBtn.innerHTML = `
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      `;
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        promptDeleteAnalysis(conv.id, conv.title);
+      });
+      actions.appendChild(delBtn);
+      item.appendChild(actions);
+
+      recentAnalysesList.appendChild(item);
+    });
+  }
+
+  async function createNewAnalysis(targetDataset = null) {
+    const ds = targetDataset || activeDataset;
+    const dsId = ds ? ds.dataset_id : null;
+    const title = ds ? `Analysis on ${ds.filename || 'Dataset'}` : 'New Analysis';
+
+    try {
+      const res = await fetch('/conversations', {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          title: title,
+          workspace_mode: 'dataset',
+          dataset_id: dsId,
+          session_id: (ds && ds.session_id) || (activeDataset && activeDataset.session_id) || currentSessionId,
+        }),
+      });
+
+      if (!res.ok) {
+        showToast('Failed to create new analysis session');
+        return;
+      }
+
+      const authHdr = res.headers.get('X-Session-Token');
+      if (authHdr) {
+        currentSessionToken = authHdr;
+        try {
+          localStorage.setItem(STORAGE_KEY_SESSION_TOKEN, authHdr);
+        } catch (_) {}
+      }
+
+      const conv = await res.json();
+      activeAnalysisId = conv.id;
+      currentSessionId = conv.id;
+      try {
+        localStorage.setItem(STORAGE_KEY_ACTIVE_ANALYSIS, conv.id);
+      } catch (_) {}
+
+      if (datasetSessionUuidText) {
+        datasetSessionUuidText.textContent = 'Active • Multi-turn';
+        datasetSessionUuidText.title = `Analytical Session ID: ${conv.id}`;
+      }
+
+      activeDatasetTurns = [];
+      renderDatasetConversation([]);
+
+      if (ds) {
+        renderWorkspaceDataset(ds);
+      } else {
+        showWorkspaceEmpty();
+      }
+
+      await loadRecentAnalyses();
+
+      if (datasetChatInput) {
+        datasetChatInput.value = '';
+        datasetChatInput.focus();
+      }
+      showToast('Started new analysis');
+    } catch (e) {
+      console.error('Failed to create new analysis', e);
+      showToast('Error starting new analysis');
+    }
+  }
+
+  async function switchAnalyticalConversation(convId) {
+    if (!convId) return;
+    try {
+      const res = await fetch(`/conversations/${convId}`, {
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) {
+        if (res.status === 404) {
+          deletedAnalysisIds.add(convId);
+          analysesList = analysesList.filter((c) => c.id !== convId);
+          renderRecentAnalysesList();
+          try {
+            if (localStorage.getItem(STORAGE_KEY_ACTIVE_ANALYSIS) === convId) {
+              localStorage.removeItem(STORAGE_KEY_ACTIVE_ANALYSIS);
+            }
+          } catch (_) {}
+          if (activeAnalysisId === convId) {
+            activeAnalysisId = '';
+            currentSessionId = '';
+            activeDatasetTurns = [];
+            renderDatasetConversation([]);
+            if (datasetSessionUuidText) {
+              datasetSessionUuidText.textContent = 'Ready for Analysis';
+              datasetSessionUuidText.title = 'No active analysis';
+            }
+          }
+          if (analysesList.length > 0) {
+            await switchAnalyticalConversation(analysesList[0].id);
+          } else {
+            if (datasetChatEmptyState) datasetChatEmptyState.style.display = 'flex';
+            if (datasetChatTurns) datasetChatTurns.style.display = 'none';
+          }
+        }
+        showToast('Could not load conversation');
+        return;
+      }
+      const conv = await res.json();
+      activeAnalysisId = conv.id;
+      currentSessionId = conv.id;
+      try {
+        localStorage.setItem(STORAGE_KEY_ACTIVE_ANALYSIS, conv.id);
+      } catch (_) {}
+
+      if (datasetSessionUuidText) {
+        datasetSessionUuidText.textContent = 'Active • Multi-turn';
+        datasetSessionUuidText.title = `Analytical Session ID: ${conv.id}`;
+      }
+
+      // Restore dataset binding
+      if (conv.dataset_id) {
+        try {
+          const dsRes = await fetch(`/datasets/${conv.dataset_id}?session_id=${conv.id}`, {
+            headers: getAuthHeaders(),
+          });
+          if (dsRes.ok) {
+            const dsData = await dsRes.json();
+            renderWorkspaceDataset(dsData);
+          } else {
+            activeDataset = null;
+            showWorkspaceEmpty();
+            if (workspaceActiveDatasetLabel) {
+              workspaceActiveDatasetLabel.textContent = 'No dataset selected (previous dataset unavailable)';
+            }
+          }
+        } catch (_) {
+          activeDataset = null;
+          showWorkspaceEmpty();
+        }
+      } else {
+        showWorkspaceEmpty();
+      }
+
+      // Restore messages into activeDatasetTurns
+      activeDatasetTurns = [];
+      if (conv.messages && Array.isArray(conv.messages)) {
+        conv.messages.forEach((m) => {
+          if (m.sender === 'user') {
+            activeDatasetTurns.push({
+              id: m.id,
+              sender: 'user',
+              query: m.user_message,
+              timestamp: formatIsoTime(m.created_at),
+            });
+          } else if (m.sender === 'assistant') {
+            activeDatasetTurns.push({
+              id: m.id,
+              sender: 'assistant',
+              data: m.metadata || { response: m.assistant_response },
+              userQuery: m.user_message || '',
+              timestamp: formatIsoTime(m.created_at),
+            });
+          }
+        });
+      }
+
+      renderDatasetConversation(activeDatasetTurns);
+      renderRecentAnalysesList();
+      if (datasetChatInput) datasetChatInput.focus();
+    } catch (e) {
+      console.error('Error switching analytical conversation', e);
+      showToast('Failed to switch conversation');
+    }
+  }
+
+  function promptDeleteAnalysis(convId, convTitle = 'Analysis') {
+    pendingDeleteAnalysisId = convId;
+    pendingDeleteThreadId = null;
+    pendingDeleteDatasetId = null;
+    pendingDeleteDatasetSessionId = null;
+    activeModalTriggerEl = document.activeElement;
+    if (deleteConfirmModal) {
+      const titleEl = document.getElementById('deleteModalTitle');
+      const msgEl = document.getElementById('deleteModalMessage');
+      if (titleEl) titleEl.textContent = 'Delete Analysis';
+      if (msgEl) msgEl.textContent = `Are you sure you want to permanently delete "${convTitle || 'this analysis'}"? This action cannot be undone.`;
+      deleteConfirmModal.style.display = 'flex';
+      if (cancelDeleteBtn) cancelDeleteBtn.focus();
+    }
+  }
+
+  async function executeDeleteAnalysis(convId) {
+    if (!convId) return;
+
+    // Immediately abort any pending in-flight history request and advance request sequence
+    if (recentAnalysesAbortController) {
+      recentAnalysesAbortController.abort();
+      recentAnalysesAbortController = null;
+    }
+    recentAnalysesRequestSeq++;
+
+    let res;
+    try {
+      res = await fetch(`/conversations/${convId}`, { method: 'DELETE' });
+    } catch (netErr) {
+      console.error('Network error deleting analysis:', netErr);
+      showToast('Network error: failed to delete analysis');
+      return;
+    }
+
+    if (!res.ok && res.status !== 404) {
+      let errMsg = 'Failed to delete analysis';
+      try {
+        const errJson = await res.json();
+        if (errJson && errJson.detail) errMsg = errJson.detail;
+      } catch (_) {}
+      showToast(errMsg);
+      return;
+    }
+
+    // Persistently mark as deleted in session filter
+    deletedAnalysisIds.add(convId);
+    analysesList = analysesList.filter((c) => c.id !== convId);
+    renderRecentAnalysesList();
+
+    try {
+      if (localStorage.getItem(STORAGE_KEY_ACTIVE_ANALYSIS) === convId) {
+        localStorage.removeItem(STORAGE_KEY_ACTIVE_ANALYSIS);
+      }
+    } catch (_) {}
+
+    const wasActive = activeAnalysisId === convId;
+    if (wasActive) {
+      activeAnalysisId = '';
+      currentSessionId = '';
+      activeDatasetTurns = [];
+      renderDatasetConversation([]);
+      if (datasetSessionUuidText) {
+        datasetSessionUuidText.textContent = 'Ready for Analysis';
+        datasetSessionUuidText.title = 'No active analysis';
+      }
+
+      if (analysesList.length > 0) {
+        await switchAnalyticalConversation(analysesList[0].id);
+      } else {
+        if (datasetChatEmptyState) datasetChatEmptyState.style.display = 'flex';
+        if (datasetChatTurns) {
+          datasetChatTurns.innerHTML = '';
+          datasetChatTurns.style.display = 'none';
+        }
+        if (datasetChatInput) {
+          datasetChatInput.value = '';
+        }
+      }
+    }
+
+    // Re-sync with backend to guarantee full persistence consistency
+    await loadRecentAnalyses();
+    showToast('Analysis permanently deleted');
+  }
+
+  function isDatasetChatNearBottom(threshold = 120) {
+    if (!datasetChatScrollArea) return true;
+    const scrollDistance = datasetChatScrollArea.scrollHeight - datasetChatScrollArea.scrollTop - datasetChatScrollArea.clientHeight;
+    return scrollDistance <= threshold;
+  }
+
+  function scrollDatasetChatToBottom(force = false) {
+    if (!datasetChatScrollArea) return;
+    if (force || isDatasetChatNearBottom()) {
       datasetChatScrollArea.scrollTop = datasetChatScrollArea.scrollHeight;
     }
   }
@@ -957,6 +1552,8 @@
     if (!datasetChatTurns) return;
     const existing = document.getElementById('activeDatasetTypingIndicator');
     if (existing) existing.remove();
+
+    const wasNearBottom = isDatasetChatNearBottom();
 
     const turn = document.createElement('div');
     turn.className = 'dataset-turn dataset-turn-assistant';
@@ -973,12 +1570,46 @@
     `;
     turn.appendChild(card);
     datasetChatTurns.appendChild(turn);
-    scrollDatasetChatToBottom();
+    if (wasNearBottom) {
+      scrollDatasetChatToBottom(true);
+    }
   }
 
   function removeDatasetTypingIndicator() {
     const el = document.getElementById('activeDatasetTypingIndicator');
     if (el) el.remove();
+  }
+
+  function appendDatasetUserTurnElement(turn) {
+    if (!datasetChatTurns) return;
+    if (datasetChatEmptyState) datasetChatEmptyState.style.display = 'none';
+    datasetChatTurns.style.display = 'flex';
+
+    const userTurnEl = document.createElement('div');
+    userTurnEl.className = 'dataset-turn dataset-turn-user';
+    if (turn.id) userTurnEl.id = turn.id;
+    userTurnEl.innerHTML = `
+      <div class="dataset-user-bubble">${escapeHtml(turn.query || '')}</div>
+      <div class="dataset-turn-time">${escapeHtml(turn.timestamp || formatTime())}</div>
+    `;
+    datasetChatTurns.appendChild(userTurnEl);
+    scrollDatasetChatToBottom(true);
+  }
+
+  function appendDatasetAssistantTurnElement(turn) {
+    if (!datasetChatTurns) return;
+    removeDatasetTypingIndicator();
+    if (datasetChatEmptyState) datasetChatEmptyState.style.display = 'none';
+    datasetChatTurns.style.display = 'flex';
+
+    const wasNearBottom = isDatasetChatNearBottom();
+    const asstTurnEl = renderDatasetAssistantTurnElement(turn);
+    if (turn.id) asstTurnEl.id = turn.id;
+    datasetChatTurns.appendChild(asstTurnEl);
+
+    if (wasNearBottom) {
+      scrollDatasetChatToBottom(true);
+    }
   }
 
   function renderDatasetConversation(turns) {
@@ -1002,6 +1633,7 @@
         if (turn.sender === 'user') {
           const userTurnEl = document.createElement('div');
           userTurnEl.className = 'dataset-turn dataset-turn-user';
+          if (turn.id) userTurnEl.id = turn.id;
           userTurnEl.innerHTML = `
             <div class="dataset-user-bubble">${escapeHtml(turn.query || '')}</div>
             <div class="dataset-turn-time">${escapeHtml(turn.timestamp || formatTime())}</div>
@@ -1009,12 +1641,13 @@
           datasetChatTurns.appendChild(userTurnEl);
         } else if (turn.sender === 'assistant' && turn.data) {
           const asstTurnEl = renderDatasetAssistantTurnElement(turn);
+          if (turn.id) asstTurnEl.id = turn.id;
           datasetChatTurns.appendChild(asstTurnEl);
         }
       });
     }
 
-    scrollDatasetChatToBottom();
+    scrollDatasetChatToBottom(true);
   }
 
   function renderDatasetAssistantTurnElement(turn) {
@@ -1110,7 +1743,8 @@
       const tableBox = document.createElement('div');
       tableBox.className = 'table-preview-box';
 
-      const tblHead = `<tr>${data.table.columns.map((c) => `<th>${escapeHtml(String(c))}</th>`).join('')}</tr>`;
+      const displayCols = data.table.display_columns || data.table.columns;
+      const tblHead = `<tr>${displayCols.map((c) => `<th>${escapeHtml(formatCleanDisplayLabel(String(c)))}</th>`).join('')}</tr>`;
       const tblBody = previewRows
         .map((r) => `<tr>${r.map((v) => `<td>${escapeHtml(formatCellValue(v))}</td>`).join('')}</tr>`)
         .join('');
@@ -1121,7 +1755,7 @@
             <span>📋</span>
             <span>Table Preview (Showing ${previewRows.length} of ${totalRows} rows)</span>
           </div>
-          <span class="table-preview-count">${data.table.columns.length} columns</span>
+          <span class="table-preview-count">${displayCols.length} columns</span>
         </div>
         <div class="table-scroll-wrap">
           <table class="analysis-result-table">
@@ -1151,14 +1785,14 @@
       const viewAllBtn = tableBox.querySelector('.btn-view-all');
       if (viewAllBtn) {
         viewAllBtn.addEventListener('click', () => {
-          openTableModal(data.table.columns, data.table.rows, turn.userQuery || 'Query Result Data');
+          openTableModal(displayCols.map(formatCleanDisplayLabel), data.table.rows, turn.userQuery || 'Query Result Data');
         });
       }
 
       const exportBtn = tableBox.querySelector('.btn-export-csv');
       if (exportBtn) {
         exportBtn.addEventListener('click', () => {
-          exportTableToCsv(data.table.columns, data.table.rows, 'analysis_result.csv');
+          exportTableToCsv(displayCols.map(formatCleanDisplayLabel), data.table.rows, 'analysis_result.csv');
         });
       }
 
@@ -1183,6 +1817,8 @@
   }
 
   async function runDatasetChat(queryText) {
+    if (isDatasetLoading) return;
+
     const query = (queryText || (datasetChatInput ? datasetChatInput.value : '')).trim();
     if (!query) {
       showToast('Please enter an analytical question.');
@@ -1192,32 +1828,37 @@
       showToast('No active dataset uploaded. Please upload a dataset first.');
       return;
     }
-    if (isDatasetLoading) return;
 
-    // Immediately render user turn
-    const userTime = formatTime();
-    const userTurn = {
-      id: 'dt-u-' + Date.now(),
-      sender: 'user',
-      query: query,
-      timestamp: userTime,
-    };
-    activeDatasetTurns.push(userTurn);
-    saveDatasetTurns(activeDataset.dataset_id, activeDatasetTurns);
-    renderDatasetConversation(activeDatasetTurns);
-
-    // Composer loading state
-    if (datasetChatInput) datasetChatInput.value = '';
+    // In-flight guard: Lock synchronously before any async calls to avoid duplicate dispatches
     isDatasetLoading = true;
+    if (datasetChatInput) datasetChatInput.value = '';
     if (datasetSendBtn) datasetSendBtn.disabled = true;
     if (datasetSendSpinner) datasetSendSpinner.style.display = 'inline-block';
     if (datasetSendBtnText) datasetSendBtnText.style.display = 'none';
     if (datasetChatInput) datasetChatInput.disabled = true;
 
-    appendDatasetTypingIndicator();
-
     try {
-      const headers = { 'Content-Type': 'application/json' };
+      if (!activeAnalysisId) {
+        await createNewAnalysis();
+      }
+      if (!activeAnalysisId) {
+        throw new Error('Unable to establish analytical session');
+      }
+
+      // Immediately append user turn without resetting existing DOM
+      const userTime = formatTime();
+      const userTurn = {
+        id: 'dt-u-' + Date.now(),
+        sender: 'user',
+        query: query,
+        timestamp: userTime,
+      };
+      activeDatasetTurns.push(userTurn);
+      appendDatasetUserTurnElement(userTurn);
+
+      appendDatasetTypingIndicator();
+
+      const headers = getAuthHeaders({ 'Content-Type': 'application/json' });
       const apiKey = getApiKey();
       if (apiKey && apiKey.trim().length > 0) {
         headers['X-API-Key'] = apiKey.trim();
@@ -1225,8 +1866,9 @@
 
       const payload = {
         message: query,
-        session_id: currentSessionId,
+        session_id: activeAnalysisId,
         dataset_id: activeDataset.dataset_id,
+        workspace_mode: WORKSPACE_MODE_DATASET,
       };
 
       const res = await fetch('/chat', {
@@ -1234,6 +1876,14 @@
         headers: headers,
         body: JSON.stringify(payload),
       });
+
+      const authHdr = res.headers.get('X-Session-Token');
+      if (authHdr) {
+        currentSessionToken = authHdr;
+        try {
+          localStorage.setItem(STORAGE_KEY_SESSION_TOKEN, authHdr);
+        } catch (_) {}
+      }
 
       removeDatasetTypingIndicator();
 
@@ -1270,8 +1920,12 @@
         timestamp: assistantTime,
       };
       activeDatasetTurns.push(assistantTurn);
-      saveDatasetTurns(activeDataset.dataset_id, activeDatasetTurns);
-      renderDatasetConversation(activeDatasetTurns);
+      appendDatasetAssistantTurnElement(assistantTurn);
+
+      // Refresh recent analyses to update title & timestamp
+      if (data.status !== 'error') {
+        loadRecentAnalyses();
+      }
     } catch (err) {
       removeDatasetTypingIndicator();
       const errTurn = {
@@ -1287,8 +1941,7 @@
         timestamp: formatTime(),
       };
       activeDatasetTurns.push(errTurn);
-      saveDatasetTurns(activeDataset.dataset_id, activeDatasetTurns);
-      renderDatasetConversation(activeDatasetTurns);
+      appendDatasetAssistantTurnElement(errTurn);
     } finally {
       isDatasetLoading = false;
       if (datasetSendBtn) datasetSendBtn.disabled = false;
@@ -1301,11 +1954,14 @@
     }
   }
 
-  function clearDatasetChat() {
-    if (!activeDataset) return;
+  async function clearDatasetChat() {
+    if (!activeAnalysisId) return;
+    try {
+      await fetch(`/conversations/${activeAnalysisId}/clear`, { method: 'POST' });
+    } catch (_) {}
     activeDatasetTurns = [];
-    saveDatasetTurns(activeDataset.dataset_id, []);
     renderDatasetConversation([]);
+    await loadRecentAnalyses();
     showToast('Dataset conversation cleared');
   }
 
@@ -1319,9 +1975,13 @@
     if (workspaceEmptyState) workspaceEmptyState.style.display = 'flex';
     if (workspaceContentCard) workspaceContentCard.style.display = 'none';
     if (workspaceSwitchBtn) workspaceSwitchBtn.style.display = 'none';
+    if (workspaceRemoveBtn) workspaceRemoveBtn.style.display = 'none';
+    if (workspaceDeleteDatasetBtn) workspaceDeleteDatasetBtn.style.display = 'none';
     if (toggleSchemaTableBtn) toggleSchemaTableBtn.style.display = 'none';
     if (workspaceSchemaSection) workspaceSchemaSection.style.display = 'none';
     if (workspaceActiveDatasetLabel) workspaceActiveDatasetLabel.textContent = 'No dataset selected';
+    const emptyUploadSpan = workspaceUploadBtn ? workspaceUploadBtn.querySelector('span') : null;
+    if (emptyUploadSpan) emptyUploadSpan.textContent = 'Upload Dataset';
 
     // UI-2: Update Sidebar Dataset Context
     if (sidebarDatasetActiveCard) sidebarDatasetActiveCard.style.display = 'none';
@@ -1337,9 +1997,13 @@
     if (workspaceActiveDatasetLabel) {
       workspaceActiveDatasetLabel.textContent = `${data.filename} (${data.dataset_id.slice(0, 8)}...)`;
     }
+    const activeUploadSpan = workspaceUploadBtn ? workspaceUploadBtn.querySelector('span') : null;
+    if (activeUploadSpan) activeUploadSpan.textContent = 'Upload New';
     if (workspaceEmptyState) workspaceEmptyState.style.display = 'none';
     if (workspaceContentCard) workspaceContentCard.style.display = 'flex';
     if (workspaceSwitchBtn) workspaceSwitchBtn.style.display = 'inline-flex';
+    if (workspaceRemoveBtn) workspaceRemoveBtn.style.display = 'inline-flex';
+    if (workspaceDeleteDatasetBtn) workspaceDeleteDatasetBtn.style.display = 'inline-flex';
     if (toggleSchemaTableBtn) toggleSchemaTableBtn.style.display = 'inline-flex';
 
     if (profileFormatTag) profileFormatTag.textContent = (data.format || 'csv').toUpperCase();
@@ -1408,7 +2072,6 @@
       });
     }
 
-    activeDatasetTurns = loadDatasetTurns(data.dataset_id);
     renderDatasetConversation(activeDatasetTurns);
   }
 
@@ -1450,10 +2113,30 @@
 
     // 5. If switching to dataset view, ensure dataset state or empty state is rendered
     if (!isSupport) {
-      if (activeDataset) {
-        renderWorkspaceDataset(activeDataset);
-      } else {
-        showWorkspaceEmpty();
+      loadRecentAnalyses().then(() => {
+        const savedAnalysisId = localStorage.getItem(STORAGE_KEY_ACTIVE_ANALYSIS);
+        const validSaved = savedAnalysisId && analysesList.some((c) => c.id === savedAnalysisId);
+        if (validSaved) {
+          if (!activeAnalysisId || activeAnalysisId !== savedAnalysisId) {
+            switchAnalyticalConversation(savedAnalysisId);
+          }
+        } else {
+          try {
+            localStorage.removeItem(STORAGE_KEY_ACTIVE_ANALYSIS);
+          } catch (_) {}
+          if (!activeAnalysisId && analysesList.length > 0) {
+            switchAnalyticalConversation(analysesList[0].id);
+          } else if (activeDataset) {
+            renderWorkspaceDataset(activeDataset);
+          } else {
+            showWorkspaceEmpty();
+          }
+        }
+      });
+    } else {
+      const activeThread = getActiveThread();
+      if (activeThread && activeThread.id) {
+        currentSessionId = activeThread.id;
       }
     }
   }
@@ -1548,37 +2231,260 @@
 
   function promptDeleteThread(threadId) {
     pendingDeleteThreadId = threadId;
+    pendingDeleteAnalysisId = null;
+    pendingDeleteDatasetId = null;
+    pendingDeleteDatasetSessionId = null;
     activeModalTriggerEl = document.activeElement;
     if (deleteConfirmModal) {
+      const titleEl = document.getElementById('deleteModalTitle');
+      const msgEl = document.getElementById('deleteModalMessage');
+      if (titleEl) titleEl.textContent = 'Delete Conversation';
+      if (msgEl) msgEl.textContent = 'Are you sure you want to permanently delete this conversation? This action cannot be undone.';
       deleteConfirmModal.style.display = 'flex';
       if (cancelDeleteBtn) cancelDeleteBtn.focus();
     }
   }
 
-  function confirmDelete() {
-    if (!pendingDeleteThreadId) return;
+  function promptDeleteCurrentDataset() {
+    if (!activeDataset) {
+      showToast('No active dataset to delete');
+      return;
+    }
+    const targetSessionId = activeDataset.session_id || (activeAnalysisId || currentSessionId);
+    promptDeleteDataset(activeDataset.dataset_id, activeDataset.filename, targetSessionId);
+  }
 
-    threads = threads.filter((t) => t.id !== pendingDeleteThreadId);
-    saveThreadsToStorage();
+  function promptDeleteDataset(datasetId, datasetName, sessionId) {
+    pendingDeleteDatasetId = datasetId;
+    pendingDeleteDatasetSessionId = sessionId || (activeDataset && activeDataset.dataset_id === datasetId ? activeDataset.session_id : null) || (activeAnalysisId || currentSessionId);
+    pendingDeleteThreadId = null;
+    pendingDeleteAnalysisId = null;
+    activeModalTriggerEl = document.activeElement;
+    if (deleteConfirmModal) {
+      const titleEl = document.getElementById('deleteModalTitle');
+      const msgEl = document.getElementById('deleteModalMessage');
+      if (titleEl) titleEl.textContent = 'Delete Dataset Permanently';
+      if (msgEl) msgEl.textContent = `Are you sure you want to permanently delete dataset "${datasetName || 'this dataset'}"? This will delete all stored dataset files and cannot be undone.`;
+      deleteConfirmModal.style.display = 'flex';
+      if (cancelDeleteBtn) cancelDeleteBtn.focus();
+    }
+  }
 
-    showToast('Conversation permanently deleted');
-
-    if (activeThreadId === pendingDeleteThreadId) {
-      const next = threads.find((t) => !t.isArchived);
-      if (next) {
-        switchToThread(next.id);
-      } else {
-        createNewThread();
+  async function executeDeleteDataset(datasetId, sessionId) {
+    try {
+      let resolvedSessionId = sessionId;
+      if (!resolvedSessionId) {
+        if (activeDataset && activeDataset.dataset_id === datasetId && activeDataset.session_id) {
+          resolvedSessionId = activeDataset.session_id;
+        } else if (activeAnalysisId) {
+          resolvedSessionId = activeAnalysisId;
+        } else {
+          resolvedSessionId = currentSessionId;
+        }
       }
-    } else {
-      renderSidebarThreads();
+      const queryParam = resolvedSessionId ? `?session_id=${encodeURIComponent(resolvedSessionId)}` : '';
+      const res = await fetch(`/datasets/${encodeURIComponent(datasetId)}${queryParam}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.detail || 'Failed to delete dataset');
+        return;
+      }
+      showToast('Dataset permanently deleted');
+
+      if (activeDataset && activeDataset.dataset_id === datasetId) {
+        activeDataset = null;
+        showWorkspaceEmpty();
+      }
+
+      if (activeAnalysisId) {
+        const current = analysesList.find((c) => c.id === activeAnalysisId);
+        if (current && current.dataset_id === datasetId) {
+          current.dataset_id = null;
+        }
+      }
+
+      if (switchDatasetModal && switchDatasetModal.style.display !== 'none') {
+        openSwitchDatasetModal();
+      }
+    } catch (err) {
+      showToast('Error deleting dataset: ' + err.message);
+    }
+  }
+
+  async function handleRemoveDatasetFromWorkspace() {
+    if (!activeDataset) {
+      showToast('No active dataset to remove');
+      return;
+    }
+    const removedName = activeDataset.filename || 'Dataset';
+    activeDataset = null;
+
+    if (activeAnalysisId) {
+      try {
+        await fetch(`/conversations/${activeAnalysisId}`, {
+          method: 'PATCH',
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ dataset_id: null }),
+        });
+        const current = analysesList.find((c) => c.id === activeAnalysisId);
+        if (current) current.dataset_id = null;
+      } catch (err) {
+        console.warn('Could not unbind dataset from conversation:', err);
+      }
     }
 
-    closeDeleteModal();
+    showWorkspaceEmpty();
+    showToast(`Removed "${removedName}" from active workspace`);
+  }
+
+  async function openSwitchDatasetModal() {
+    try {
+      const res = await fetch('/datasets', {
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) {
+        triggerWorkspaceUpload();
+        return;
+      }
+      const datasets = await res.json();
+      if (!datasets || datasets.length === 0) {
+        triggerWorkspaceUpload();
+        return;
+      }
+      renderSwitchDatasetList(datasets);
+      if (switchDatasetModal) switchDatasetModal.style.display = 'flex';
+    } catch (_) {
+      triggerWorkspaceUpload();
+    }
+  }
+
+  function closeSwitchDatasetModal() {
+    if (switchDatasetModal) switchDatasetModal.style.display = 'none';
+  }
+
+  function renderSwitchDatasetList(datasets) {
+    if (!switchDatasetList) return;
+    switchDatasetList.innerHTML = '';
+
+    datasets.forEach((ds) => {
+      const card = document.createElement('div');
+      card.className = 'switch-dataset-card' + (activeDataset && activeDataset.dataset_id === ds.dataset_id ? ' active' : '');
+
+      const info = document.createElement('div');
+      info.className = 'switch-dataset-info';
+      const name = document.createElement('div');
+      name.className = 'switch-dataset-name';
+      name.textContent = ds.filename || 'dataset.csv';
+      const meta = document.createElement('div');
+      meta.className = 'switch-dataset-meta';
+      const rows = ds.row_count ? ds.row_count.toLocaleString() : '0';
+      const cols = ds.column_count ? ds.column_count : '0';
+      const format = (ds.format || 'CSV').toUpperCase();
+      meta.textContent = `${format} • ${rows} rows • ${cols} columns`;
+
+      info.appendChild(name);
+      info.appendChild(meta);
+
+      const actions = document.createElement('div');
+      actions.className = 'switch-dataset-actions';
+
+      const selectBtn = document.createElement('button');
+      selectBtn.type = 'button';
+      selectBtn.className = 'btn btn-secondary btn-sm';
+      selectBtn.textContent = (activeDataset && activeDataset.dataset_id === ds.dataset_id) ? 'Active' : 'Select';
+      if (activeDataset && activeDataset.dataset_id === ds.dataset_id) {
+        selectBtn.disabled = true;
+      } else {
+        selectBtn.addEventListener('click', async () => {
+          closeSwitchDatasetModal();
+          renderWorkspaceDataset(ds);
+          if (activeAnalysisId) {
+            try {
+              await fetch(`/conversations/${activeAnalysisId}`, {
+                method: 'PATCH',
+                headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({
+                  dataset_id: ds.dataset_id,
+                  session_id: ds.session_id || currentSessionId,
+                }),
+              });
+              const current = analysesList.find((c) => c.id === activeAnalysisId);
+              if (current) current.dataset_id = ds.dataset_id;
+            } catch (_) {}
+          }
+          showToast(`Switched active dataset to ${ds.filename}`);
+        });
+      }
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'btn-micro danger';
+      delBtn.title = 'Permanently delete this dataset';
+      delBtn.setAttribute('aria-label', `Delete dataset ${ds.filename}`);
+      delBtn.innerHTML = `
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        </svg>
+      `;
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        promptDeleteDataset(ds.dataset_id, ds.filename, ds.session_id);
+      });
+
+      actions.appendChild(selectBtn);
+      actions.appendChild(delBtn);
+
+      card.appendChild(info);
+      card.appendChild(actions);
+      switchDatasetList.appendChild(card);
+    });
+  }
+
+  async function confirmDelete() {
+    if (pendingDeleteDatasetId) {
+      const dsId = pendingDeleteDatasetId;
+      const dsSessionId = pendingDeleteDatasetSessionId;
+      pendingDeleteDatasetId = null;
+      pendingDeleteDatasetSessionId = null;
+      closeDeleteModal();
+      await executeDeleteDataset(dsId, dsSessionId);
+      return;
+    }
+
+    if (pendingDeleteAnalysisId) {
+      const convId = pendingDeleteAnalysisId;
+      closeDeleteModal();
+      await executeDeleteAnalysis(convId);
+      return;
+    }
+
+    if (pendingDeleteThreadId) {
+      threads = threads.filter((t) => t.id !== pendingDeleteThreadId);
+      saveThreadsToStorage();
+
+      showToast('Conversation permanently deleted');
+
+      if (activeThreadId === pendingDeleteThreadId) {
+        const next = threads.find((t) => !t.isArchived);
+        if (next) {
+          switchToThread(next.id);
+        } else {
+          createNewThread();
+        }
+      } else {
+        renderSidebarThreads();
+      }
+
+      closeDeleteModal();
+    }
   }
 
   function closeDeleteModal() {
     pendingDeleteThreadId = null;
+    pendingDeleteAnalysisId = null;
+    pendingDeleteDatasetId = null;
+    pendingDeleteDatasetSessionId = null;
     if (deleteConfirmModal) {
       deleteConfirmModal.style.display = 'none';
     }
@@ -1809,7 +2715,7 @@
       const tbl = document.createElement('table');
       tbl.className = 'analysis-result-table';
       tbl.innerHTML = `
-        <thead><tr>${data.table.columns.map((c) => `<th>${c}</th>`).join('')}</tr></thead>
+        <thead><tr>${data.table.columns.map((c) => `<th>${escapeHtml(formatCleanDisplayLabel(String(c)))}</th>`).join('')}</tr></thead>
         <tbody>${data.table.rows.map((r) => `<tr>${r.map((v) => `<td>${v !== null && v !== undefined ? String(v) : ''}</td>`).join('')}</tr>`).join('')}</tbody>
       `;
       tableWrap.appendChild(tbl);
@@ -1974,7 +2880,7 @@
     appendTypingIndicator();
 
     try {
-      const headers = { 'Content-Type': 'application/json' };
+      const headers = getAuthHeaders({ 'Content-Type': 'application/json' });
       const apiKey = getApiKey();
       if (apiKey && apiKey.trim().length > 0) {
         headers['X-API-Key'] = apiKey.trim();
@@ -1982,7 +2888,8 @@
 
       const payload = {
         message: message,
-        session_id: currentSessionId,
+        session_id: (thread && thread.id) ? thread.id : currentSessionId,
+        workspace_mode: currentWorkspaceMode || WORKSPACE_MODE_SUPPORT,
       };
 
       if (thread && thread.attachment && thread.attachment.document_id) {
@@ -1997,6 +2904,14 @@
         headers: headers,
         body: JSON.stringify(payload),
       });
+
+      const authHdr = res.headers.get('X-Session-Token');
+      if (authHdr) {
+        currentSessionToken = authHdr;
+        try {
+          localStorage.setItem(STORAGE_KEY_SESSION_TOKEN, authHdr);
+        } catch (_) {}
+      }
 
       removeTypingIndicator();
 
@@ -2082,24 +2997,41 @@
     });
 
     // New Chat / New Analysis
-    newChatBtn.addEventListener('click', () => {
+    newChatBtn.addEventListener('click', async () => {
       if (currentWorkspaceMode === WORKSPACE_MODE_DATASET) {
         if (!activeDataset) {
           showToast('Please upload or select a dataset to begin analysis');
           if (workspaceUploadFileInput) workspaceUploadFileInput.click();
         } else {
-          clearDatasetChat();
-          if (datasetChatInput) {
-            datasetChatInput.value = '';
-            datasetChatInput.focus();
-          }
-          showToast(`Started new analysis for ${activeDataset.filename || 'active dataset'}`);
+          await createNewAnalysis();
         }
       } else {
         createNewThread();
         showToast('Started new conversation');
       }
     });
+
+    if (sidebarNewAnalysisBtn) {
+      sidebarNewAnalysisBtn.addEventListener('click', async () => {
+        if (!activeDataset) {
+          showToast('Please upload or select a dataset to begin analysis');
+          if (workspaceUploadFileInput) workspaceUploadFileInput.click();
+        } else {
+          await createNewAnalysis();
+        }
+      });
+    }
+
+    if (workspaceNewAnalysisBtn) {
+      workspaceNewAnalysisBtn.addEventListener('click', async () => {
+        if (!activeDataset) {
+          showToast('Please upload or select a dataset to begin analysis');
+          if (workspaceUploadFileInput) workspaceUploadFileInput.click();
+        } else {
+          await createNewAnalysis();
+        }
+      });
+    }
 
     // UI-2: Mode Selector Segmented Buttons
     if (tabSupportModeBtn) {
@@ -2233,9 +3165,25 @@
     };
     if (workspaceUploadBtn) workspaceUploadBtn.addEventListener('click', triggerWorkspaceUpload);
     if (workspaceUploadTriggerBtn) workspaceUploadTriggerBtn.addEventListener('click', triggerWorkspaceUpload);
-    if (workspaceSwitchBtn) workspaceSwitchBtn.addEventListener('click', triggerWorkspaceUpload);
+    if (workspaceSwitchBtn) workspaceSwitchBtn.addEventListener('click', openSwitchDatasetModal);
+    if (sidebarSwitchDatasetBtn) sidebarSwitchDatasetBtn.addEventListener('click', openSwitchDatasetModal);
+    if (workspaceRemoveBtn) workspaceRemoveBtn.addEventListener('click', handleRemoveDatasetFromWorkspace);
+    if (sidebarRemoveDatasetBtn) sidebarRemoveDatasetBtn.addEventListener('click', handleRemoveDatasetFromWorkspace);
+    if (workspaceDeleteDatasetBtn) workspaceDeleteDatasetBtn.addEventListener('click', promptDeleteCurrentDataset);
     if (sidebarDatasetUploadBtn) sidebarDatasetUploadBtn.addEventListener('click', triggerWorkspaceUpload);
-    if (sidebarSwitchDatasetBtn) sidebarSwitchDatasetBtn.addEventListener('click', triggerWorkspaceUpload);
+    if (closeSwitchDatasetModalBtn) closeSwitchDatasetModalBtn.addEventListener('click', closeSwitchDatasetModal);
+    if (cancelSwitchDatasetBtn) cancelSwitchDatasetBtn.addEventListener('click', closeSwitchDatasetModal);
+    if (switchUploadNewBtn) {
+      switchUploadNewBtn.addEventListener('click', () => {
+        closeSwitchDatasetModal();
+        triggerWorkspaceUpload();
+      });
+    }
+    if (switchDatasetModal) {
+      switchDatasetModal.addEventListener('click', (e) => {
+        if (e.target === switchDatasetModal) closeSwitchDatasetModal();
+      });
+    }
     if (workspaceUploadFileInput) {
       workspaceUploadFileInput.addEventListener('change', (e) => {
         if (e.target.files && e.target.files[0]) {
@@ -2259,7 +3207,7 @@
         }
       });
     }
-    document.querySelectorAll('.query-chip').forEach((chip) => {
+    document.querySelectorAll('.query-chip:not(.dataset-chip-action)').forEach((chip) => {
       chip.addEventListener('click', () => {
         const q = chip.getAttribute('data-query');
         if (q) {
@@ -2288,8 +3236,19 @@
     if (clearDatasetChatBtn) {
       clearDatasetChatBtn.addEventListener('click', clearDatasetChat);
     }
+    if (deleteDatasetChatBtn) {
+      deleteDatasetChatBtn.addEventListener('click', () => {
+        if (!activeAnalysisId) {
+          showToast('No active analysis to delete');
+          return;
+        }
+        const current = analysesList.find((c) => c.id === activeAnalysisId);
+        promptDeleteAnalysis(activeAnalysisId, current ? current.title : 'Active Analysis');
+      });
+    }
     document.querySelectorAll('.dataset-chip-action').forEach((chip) => {
-      chip.addEventListener('click', () => {
+      chip.addEventListener('click', (e) => {
+        e.preventDefault();
         const q = chip.getAttribute('data-query');
         if (q) {
           if (datasetChatInput) datasetChatInput.value = q;
@@ -2406,11 +3365,113 @@
   }
 
   // ==========================================================================
+  // Desktop Sidebar Resizer (Splitter / Drag Handle)
+  // ==========================================================================
+  const DEFAULT_SIDEBAR_WIDTH = 260;
+  const MIN_SIDEBAR_WIDTH = 200;
+  const MAX_SIDEBAR_WIDTH = 520;
+
+  function initSidebarResizer() {
+    const sidebar = document.getElementById('sidebarLeft') || document.querySelector('.sidebar-left');
+    const resizer = document.getElementById('sidebarResizer');
+    if (!sidebar || !resizer) return;
+
+    function applySavedWidth() {
+      if (window.innerWidth <= 768) {
+        sidebar.style.removeProperty('width');
+        return;
+      }
+      const savedWidth = localStorage.getItem(STORAGE_KEY_SIDEBAR_WIDTH);
+      if (savedWidth) {
+        const parsed = parseInt(savedWidth, 10);
+        if (!isNaN(parsed) && parsed >= MIN_SIDEBAR_WIDTH && parsed <= MAX_SIDEBAR_WIDTH) {
+          sidebar.style.width = parsed + 'px';
+          document.documentElement.style.setProperty('--sidebar-width', parsed + 'px');
+          return;
+        }
+      }
+      sidebar.style.width = DEFAULT_SIDEBAR_WIDTH + 'px';
+      document.documentElement.style.setProperty('--sidebar-width', DEFAULT_SIDEBAR_WIDTH + 'px');
+    }
+
+    applySavedWidth();
+
+    let isResizing = false;
+    let startX = 0;
+    let startWidth = 0;
+
+    function onMouseDown(e) {
+      if (window.innerWidth <= 768) return;
+      if (e.button !== 0) return;
+
+      e.preventDefault();
+      isResizing = true;
+      startX = e.clientX;
+      startWidth = sidebar.getBoundingClientRect().width;
+
+      resizer.classList.add('is-dragging');
+      document.body.classList.add('sidebar-resizing');
+
+      document.addEventListener('mousemove', onMouseMove, { passive: false });
+      document.addEventListener('mouseup', onMouseUp);
+    }
+
+    function onMouseMove(e) {
+      if (!isResizing) return;
+      e.preventDefault();
+
+      const deltaX = e.clientX - startX;
+      let newWidth = startWidth + deltaX;
+
+      const dynamicMax = Math.min(MAX_SIDEBAR_WIDTH, Math.floor(window.innerWidth * 0.5));
+      newWidth = Math.max(MIN_SIDEBAR_WIDTH, Math.min(newWidth, dynamicMax));
+
+      sidebar.style.width = newWidth + 'px';
+      document.documentElement.style.setProperty('--sidebar-width', newWidth + 'px');
+    }
+
+    function onMouseUp(e) {
+      if (!isResizing) return;
+      isResizing = false;
+
+      resizer.classList.remove('is-dragging');
+      document.body.classList.remove('sidebar-resizing');
+
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+
+      const finalWidth = Math.round(sidebar.getBoundingClientRect().width);
+      if (finalWidth >= MIN_SIDEBAR_WIDTH && finalWidth <= MAX_SIDEBAR_WIDTH) {
+        localStorage.setItem(STORAGE_KEY_SIDEBAR_WIDTH, finalWidth.toString());
+      }
+    }
+
+    resizer.addEventListener('dblclick', (e) => {
+      if (window.innerWidth <= 768) return;
+      e.preventDefault();
+      sidebar.style.width = DEFAULT_SIDEBAR_WIDTH + 'px';
+      document.documentElement.style.setProperty('--sidebar-width', DEFAULT_SIDEBAR_WIDTH + 'px');
+      localStorage.setItem(STORAGE_KEY_SIDEBAR_WIDTH, DEFAULT_SIDEBAR_WIDTH.toString());
+    });
+
+    resizer.addEventListener('mousedown', onMouseDown);
+
+    window.addEventListener('resize', () => {
+      if (window.innerWidth <= 768) {
+        sidebar.style.removeProperty('width');
+      } else {
+        applySavedWidth();
+      }
+    });
+  }
+
+  // ==========================================================================
   // App Bootstrapping
   // ==========================================================================
   function init() {
     initTheme();
     initApiKey();
+    initSidebarResizer();
     initDemoCustomer();
     loadThreadsFromStorage();
 
@@ -2424,12 +3485,23 @@
       createNewThread();
     }
 
-    // UI-2: Restore Active Workspace Mode
-    const savedMode = localStorage.getItem(STORAGE_KEY_WORKSPACE_MODE) || WORKSPACE_MODE_SUPPORT;
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlMode = urlParams.get('mode');
+    const savedMode = (urlMode === WORKSPACE_MODE_DATASET || urlMode === WORKSPACE_MODE_SUPPORT)
+      ? urlMode
+      : (localStorage.getItem(STORAGE_KEY_WORKSPACE_MODE) || WORKSPACE_MODE_SUPPORT);
     switchWorkspaceMode(savedMode);
+
+    if (savedMode === WORKSPACE_MODE_SUPPORT) {
+      loadRecentAnalyses();
+    }
 
     initEventListeners();
   }
 
-  document.addEventListener('DOMContentLoaded', init);
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 })();

@@ -24,18 +24,31 @@ def load_dataframe_from_bytes(content_bytes: bytes, file_format: str) -> pd.Data
     fmt = file_format.lower().lstrip(".")
 
     if fmt == "csv":
+        sep = None
+        try:
+            sample_str = content_bytes[:4096].decode("utf-8", errors="ignore")
+            import csv
+            dialect = csv.Sniffer().sniff(sample_str, delimiters=",\t;|")
+            sep = dialect.delimiter
+        except Exception:
+            sep = None
+
         try:
             # Try UTF-8 first
-            df = pd.read_csv(io.BytesIO(content_bytes), encoding="utf-8")
+            df = pd.read_csv(io.BytesIO(content_bytes), sep=sep, engine="python" if sep and sep != "," else "c", encoding="utf-8")
         except UnicodeDecodeError:
             try:
-                df = pd.read_csv(io.BytesIO(content_bytes), encoding="latin-1")
+                df = pd.read_csv(io.BytesIO(content_bytes), sep=sep, engine="python" if sep and sep != "," else "c", encoding="latin-1")
             except Exception as e:
                 raise DatasetProfileError(f"Failed to decode and parse CSV file: {e}")
         except pd.errors.EmptyDataError:
             raise DatasetProfileError("CSV file is empty or contains no readable columns.")
         except Exception as e:
-            raise DatasetProfileError(f"Failed to parse CSV file: {e}")
+            try:
+                # Fallback to python engine with auto-detection if c engine failed
+                df = pd.read_csv(io.BytesIO(content_bytes), sep=None, engine="python", encoding="utf-8")
+            except Exception:
+                raise DatasetProfileError(f"Failed to parse CSV file: {e}")
 
     elif fmt == "xlsx":
         try:

@@ -272,30 +272,29 @@ def index_document(
 
 def delete_document(
     document_id: str,
-    session_id: str | None = None,
+    session_id: str,
     persist_dir: str | None = None,
     embedding_fn=None,
 ) -> dict:
     """
     Deletes vectors/chunks for document_id from the uploaded_documents collection.
-    If session_id is provided, enforces session ownership.
+    Enforces non-empty session ownership.
     """
     if not document_id or not document_id.strip():
         raise DocumentValidationError("A valid document_id is required for deletion.")
+    if not session_id or not session_id.strip():
+        raise DocumentValidationError("A valid, non-empty session_id is required for document deletion.")
 
     clean_doc_id = document_id.strip()
+    clean_session_id = session_id.strip()
     collection = get_documents_collection(persist_dir=persist_dir, embedding_fn=embedding_fn)
 
-    where_filter: dict
-    if session_id and session_id.strip():
-        where_filter = {
-            "$and": [
-                {"document_id": clean_doc_id},
-                {"session_id": session_id.strip()},
-            ]
-        }
-    else:
-        where_filter = {"document_id": clean_doc_id}
+    where_filter = {
+        "$and": [
+            {"document_id": clean_doc_id},
+            {"session_id": clean_session_id},
+        ]
+    }
 
     matches = collection.get(where=where_filter)
     matched_ids = matches.get("ids", [])

@@ -17,6 +17,7 @@ the final database result.
 import json
 import logging
 import re
+from datetime import datetime, date
 from app.agent.state import AgentState
 from app.agent.router import (
     classify_intent,
@@ -29,13 +30,15 @@ from app.agent.router import (
     INTENT_DATA_QUERY,
     INTENT_DOCUMENT_QUERY,
     INTENT_DATASET_ANALYSIS,
+    INTENT_ORDER_POLICY_CHECK,
 )
 from app.agent.llm_client import generate_text
 from app.agent.filters import OrderQueryFilter
 from app.tools.order_tool import get_order_status, get_customer_orders
 from app.rag.retriever import retrieve_faq
-from app.services import order_service, document_service
+from app.services import order_service, document_service, order_policy_service
 from app.api.auth import check_api_key
+from app.config import settings
 
 logger = logging.getLogger("app.agent.nodes")
 
@@ -46,6 +49,7 @@ TEMPLATE_CUSTOMER_ID_MISSING = "Could you share the customer ID you'd like me to
 TEMPLATE_CUSTOMER_NOT_FOUND = "I couldn't find any orders for that customer ID."
 TEMPLATE_FAQ_NOT_FOUND = "I don't have enough information in our support documentation to answer that accurately. Please contact support directly for this question."
 TEMPLATE_OUT_OF_SCOPE = "I'm only able to help with order status, shipping, returns, refunds, and cancellation questions for this store. I can't help with that request."
+TEMPLATE_HUMAN_ESCALATION = "I am an automated assistant, but our support team is here to help. To speak with a human agent or representative, please contact our customer support team directly."
 TEMPLATE_NO_DOCUMENTS = "No document is available in this chat. Please upload a PDF, DOCX, or TXT file first."
 TEMPLATE_NO_RELEVANT_CHUNKS = "I couldn't find relevant information in the uploaded document to answer that question."
 
@@ -93,6 +97,7 @@ def classify_node(state: AgentState) -> dict:
         previous_state=state,
         document_id=state.get("document_id"),
         dataset_id=state.get("dataset_id"),
+        workspace_mode=state.get("workspace_mode"),
     )
     return {
         "intent": result["intent"],
@@ -100,6 +105,7 @@ def classify_node(state: AgentState) -> dict:
         "customer_id": result["customer_id"],
         "document_id": result.get("document_id") or state.get("document_id"),
         "dataset_id": result.get("dataset_id") or state.get("dataset_id"),
+        "workspace_mode": state.get("workspace_mode"),
         "pending_analysis": result.get("pending_analysis") or state.get("pending_analysis"),
         "resolved_metric": result.get("resolved_metric"),
         "ambiguity_details": result.get("ambiguity_details"),
@@ -110,10 +116,35 @@ def classify_node(state: AgentState) -> dict:
 
 def _format_order_response(order: dict) -> str:
     """Deterministic template -- no LLM involved. Every word here traces
-    directly to a field returned by the database."""
-    delivery = f", estimated delivery {order['estimated_delivery']}" if order.get("estimated_delivery") else ""
+    directly to a field returned by the database.
+    Distinguishes upcoming delivery dates from past estimates and delivered orders."""
+    status = order.get("status", "Unknown")
+    product = order.get("product", "Item")
+    order_id = order.get("id")
+    est_delivery = order.get("estimated_delivery")
+
+    delivery_info = ""
+    if est_delivery:
+        try:
+            est_date = datetime.strptime(est_delivery.strip(), "%Y-%m-%d").date()
+            today = date.today()
+
+            if status.lower() == "delivered":
+                delivery_info = f", delivered on {est_delivery}"
+            elif est_date < today:
+                delivery_info = (
+                    f", estimated delivery was {est_delivery} "
+                    f"(delivery date has passed; updated estimate unavailable)"
+                )
+            elif est_date == today:
+                delivery_info = f", estimated delivery today ({est_delivery})"
+            else:
+                delivery_info = f", estimated delivery {est_delivery}"
+        except (ValueError, TypeError):
+            delivery_info = f", estimated delivery {est_delivery}"
+
     return (
-        f"Order {order['id']} ({order['product']}) is currently: {order['status']}{delivery}."
+        f"Order {order_id} ({product}) is currently: {status}{delivery_info}."
     )
 
 
@@ -154,6 +185,16 @@ def customer_orders_node(state: AgentState) -> dict:
             "retrieval_count": 0,
             "status": "not_found",
             "awaiting_entity": "customer_id",
+        }
+
+    api_key = state.get("api_key")
+    if not check_api_key(api_key):
+        return {
+            "final_response": "Invalid or missing API key.",
+            "tool_used": "none",
+            "retrieval_count": 0,
+            "status": "error",
+            "awaiting_entity": None,
         }
 
     result = get_customer_orders(state["customer_id"])
@@ -203,7 +244,11 @@ def faq_node(state: AgentState) -> dict:
 
 
 def general_node(state: AgentState) -> dict:
-    response_text = generate_text(SYSTEM_PROMPT_GENERAL, state["user_message"])
+    try:
+        response_text = generate_text(SYSTEM_PROMPT_GENERAL, state["user_message"])
+    except Exception as exc:
+        logger.warning("general_node LLM generation failed or timed out: %s", exc)
+        response_text = "I'm here to assist with store support, orders, and policies. How can I help you today?"
     return {
         "final_response": response_text,
         "tool_used": "none",
@@ -214,8 +259,14 @@ def general_node(state: AgentState) -> dict:
 
 
 def out_of_scope_node(state: AgentState) -> dict:
+    msg_low = state.get("user_message", "").lower()
+    escalation_triggers = ("human", "representative", "manager", "live agent", "speak with someone", "talk to someone", "real person")
+    if any(k in msg_low for k in escalation_triggers):
+        response = TEMPLATE_HUMAN_ESCALATION
+    else:
+        response = TEMPLATE_OUT_OF_SCOPE
     return {
-        "final_response": TEMPLATE_OUT_OF_SCOPE,
+        "final_response": response,
         "tool_used": "none",
         "retrieval_count": 0,
         "status": "out_of_scope",
@@ -290,7 +341,17 @@ def data_query_node(state: AgentState) -> dict:
         }
 
     # 2. LLM parameter extraction
-    raw_llm = generate_text(FILTER_EXTRACTION_PROMPT, state["user_message"])
+    try:
+        raw_llm = generate_text(FILTER_EXTRACTION_PROMPT, state["user_message"])
+    except Exception as exc:
+        logger.warning("data_query_node LLM parameter extraction failed or timed out: %s", exc)
+        return {
+            "final_response": "I encountered an issue processing your query filters. Please try again or specify your filters directly.",
+            "tool_used": "none",
+            "retrieval_count": 0,
+            "status": "error",
+            "awaiting_entity": None,
+        }
 
     # Strip code block fences if present
     cleaned = raw_llm.strip()
@@ -418,16 +479,187 @@ def data_query_node(state: AgentState) -> dict:
     }
 
 
+_DOC_ANAPHORIC_PRONOUNS = re.compile(r"\b(?:that|this|it|those|these|them|they|its)\b", re.IGNORECASE)
+_DOC_FOLLOWUP_PATTERNS = re.compile(
+    r"\b(?:"
+    r"what about|how about|and for|"
+    r"exceptions? to (?:that|this|it)|"
+    r"who approves? (?:that|this|it)?|"
+    r"approval for (?:that|this|it)|"
+    r"does (?:that|this|it) apply|"
+    r"is (?:there|that|this) allowed|"
+    r"any exceptions?|"
+    r"can (?:that|this|it) be|"
+    r"tell me more|"
+    r"explain (?:that|this|it)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_policy_topics_from_text(text: str) -> list[str]:
+    """Extracts prominent policy topic names from conversation text or chunks."""
+    topics = []
+    raw = re.findall(
+        r"\b([A-Z][A-Za-z0-9&/\- ]{2,50}?\b(?:Policy|Guidelines|Rules|Agreement|Standards?|Procedures?))\b",
+        text,
+    )
+    for m in raw:
+        cleaned = re.sub(r"^(?:the|this|that|section \d+:?)\s+", "", m.strip(), flags=re.IGNORECASE).strip()
+        if len(cleaned) > 5 and cleaned not in topics and not cleaned.lower().startswith("acme"):
+            topics.append(cleaned)
+    return topics
+
+
+def _resolve_conversational_retrieval_query(
+    current_message: str,
+    conversation_history: list[dict],
+    state: AgentState,
+) -> tuple[str, bool, list[str]]:
+    """
+    Safely resolves conversational anaphora and follow-up references into a standalone
+    query for document vector retrieval, adhering to Phase 11 safeguards:
+    1. Does NOT resolve pronouns using previous turn alone in every case. Uses full
+       conversation history and retrieved-document evidence. If genuinely ambiguous,
+       flags is_ambiguous=True to prompt for clarification.
+    2. Does NOT treat query reformulation as evidence. The query is returned only for
+       retrieval scoring. Standalone or unsupported questions remain unaffected.
+
+    Returns:
+        (retrieval_query, is_ambiguous, candidate_topics)
+    """
+    msg_low = current_message.lower().strip()
+
+    # Case 0: Answering a pending clarification on policy topic
+    if state.get("awaiting_entity") == "document_topic" or (
+        state.get("ambiguity_details") and state["ambiguity_details"].get("candidate_topics")
+    ):
+        amb_details = state.get("ambiguity_details") or {}
+        cand_topics = amb_details.get("candidate_topics", [])
+        original_q = amb_details.get("query", "")
+        matched_topic = None
+        for cand in cand_topics:
+            cand_words = [w.lower() for w in cand.split() if len(w) > 3]
+            if any(w in msg_low for w in cand_words) or cand.lower() in msg_low:
+                matched_topic = cand
+                break
+        if not matched_topic and cand_topics:
+            matched_topic = current_message.strip()
+        if matched_topic:
+            reformulated = f"{original_q} regarding {matched_topic}".strip() if original_q else f"{current_message} regarding {matched_topic}"
+            return reformulated, False, [matched_topic]
+
+    is_contextual = bool(_DOC_ANAPHORIC_PRONOUNS.search(msg_low) or _DOC_FOLLOWUP_PATTERNS.search(msg_low))
+
+    # If the user's message is a standalone question, do NOT reformulate
+    if not is_contextual:
+        return current_message, False, []
+
+    # Gather prior conversational turns and retrieved chunks
+    prior_user_msgs = []
+    prior_asst_msgs = []
+    prior_chunks = []
+
+    if conversation_history:
+        for turn in conversation_history:
+            if turn.get("role") == "user":
+                prior_user_msgs.append(turn.get("content", ""))
+            elif turn.get("role") == "assistant":
+                prior_asst_msgs.append(turn.get("content", ""))
+
+    for chunk in state.get("retrieved_chunks", []):
+        prior_chunks.append(chunk.get("text", ""))
+
+    if not prior_user_msgs and not prior_chunks:
+        return current_message, False, []
+
+    # 1. Look for formal policy topics discussed in conversational turns
+    conv_text = "\n".join(prior_user_msgs + prior_asst_msgs)
+    candidate_topics = _extract_policy_topics_from_text(conv_text)
+
+    # 2. Check previously retrieved chunks (especially Rank 1 chunk that grounded the previous answer)
+    if prior_chunks:
+        chunk_topics = _extract_policy_topics_from_text(prior_chunks[0])
+        for ct in chunk_topics:
+            if ct not in candidate_topics:
+                candidate_topics.append(ct)
+
+    # 3. If multiple formal section topics were discussed across conversation history
+    if len(candidate_topics) >= 2:
+        matched_in_query = [
+            t for t in candidate_topics
+            if any(word in msg_low for word in t.lower().split() if len(word) > 3)
+        ]
+        if not matched_in_query:
+            # Genuinely ambiguous antecedent! (Safeguard 1)
+            return current_message, True, candidate_topics[:2]
+        else:
+            primary_topic = matched_in_query[0]
+    elif candidate_topics:
+        primary_topic = candidate_topics[0]
+    else:
+        # 4. Fallback to thematic keyword mapping
+        topic_map = {
+            "Hardware & Equipment Refresh Policy": ["hardware", "laptop", "equipment", "macbook", "thinkpad"],
+            "Corporate Travel & Meal Expense Policy": ["travel", "lodging", "hotel", "airfare", "flight", "per diem", "meal"],
+            "Remote Work & Home Office Policy": ["remote", "work from home", "home office", "hybrid", "telecommute"],
+            "Refund & Return Policy": ["refund", "return", "warranty", "cancellation", "exchange"],
+        }
+        all_prior = conv_text.lower()
+        matched_mapped = []
+        for top_name, keywords in topic_map.items():
+            if any(kw in all_prior for kw in keywords):
+                matched_mapped.append(top_name)
+
+        if len(matched_mapped) >= 2:
+            matched_in_q = [
+                t for t in matched_mapped
+                if any(word in msg_low for word in t.lower().split() if len(word) > 3)
+            ]
+            if not matched_in_q:
+                return current_message, True, matched_mapped[:2]
+            primary_topic = matched_in_q[0]
+        elif matched_mapped:
+            primary_topic = matched_mapped[0]
+        else:
+            last_q = prior_user_msgs[-1] if prior_user_msgs else ""
+            cleaned_last = re.sub(
+                r"^(?:how often|what is|what are|can an employee|where is|when can|how do)\s+",
+                "",
+                last_q,
+                flags=re.IGNORECASE,
+            )
+            primary_topic = cleaned_last.strip("? .")
+
+    reformulated = current_message
+    if re.search(r"\bto that\b", reformulated, re.IGNORECASE):
+        reformulated = re.sub(r"\bto that\b", f"to the {primary_topic}", reformulated, flags=re.IGNORECASE)
+    elif re.search(r"\bto this\b", reformulated, re.IGNORECASE):
+        reformulated = re.sub(r"\bto this\b", f"to the {primary_topic}", reformulated, flags=re.IGNORECASE)
+    elif re.search(r"\bapprove it\b", reformulated, re.IGNORECASE):
+        reformulated = re.sub(r"\bapprove it\b", f"approve exceptions for the {primary_topic}", reformulated, flags=re.IGNORECASE)
+    elif re.search(r"\bfor it\b", reformulated, re.IGNORECASE):
+        reformulated = re.sub(r"\bfor it\b", f"for the {primary_topic}", reformulated, flags=re.IGNORECASE)
+    elif re.search(r"\babout it\b", reformulated, re.IGNORECASE):
+        reformulated = re.sub(r"\babout it\b", f"about the {primary_topic}", reformulated, flags=re.IGNORECASE)
+    else:
+        reformulated = f"{current_message} regarding {primary_topic}"
+
+    return reformulated, False, [primary_topic]
+
+
 def document_query_node(state: AgentState) -> dict:
     """
     DOCUMENT_QUERY node:
     - requires valid session_id
     - checks if any documents are uploaded in the session (get_session_documents)
       -> if none: deterministic TEMPLATE_NO_DOCUMENTS, tool_used="none", status="not_found" (NO LLM)
-    - retrieves chunks through document_service.retrieve_document_chunks
+    - reformulates conversational follow-up queries using context while safeguarding against ambiguity
+      -> if genuinely ambiguous: returns status="clarification", awaiting_entity="document_topic" (Safeguard 1)
+    - retrieves chunks through document_service.retrieve_document_chunks using the resolved retrieval query
       -> if none: deterministic TEMPLATE_NO_RELEVANT_CHUNKS, tool_used="retrieve_document_chunks", status="not_found" (NO LLM)
     - constructs prompt-injection-resistant context block
-    - LLM generates answer using ONLY retrieved document context
+    - LLM generates answer using ONLY retrieved document context and original user question (Safeguard 2)
     - handles LLM failures safely
     """
     session_id = state.get("session_id")
@@ -451,12 +683,37 @@ def document_query_node(state: AgentState) -> dict:
             "awaiting_entity": None,
         }
 
-    # Step 2: Retrieve relevant chunks
+    # Step 2: Resolve conversational retrieval query and check for ambiguity
+    resolved_query, is_ambiguous, candidate_topics = _resolve_conversational_retrieval_query(
+        current_message=state["user_message"],
+        conversation_history=state.get("conversation_history", []),
+        state=state,
+    )
+
+    if is_ambiguous and candidate_topics:
+        topics_str = " or ".join(f"'{t}'" for t in candidate_topics)
+        return {
+            "final_response": (
+                f"Your question could refer to multiple policies discussed earlier ({topics_str}). "
+                f"Could you please clarify which policy you are referring to?"
+            ),
+            "tool_used": "none",
+            "retrieval_count": 0,
+            "status": "clarification",
+            "awaiting_entity": "document_topic",
+            "ambiguity_details": {
+                "candidate_topics": candidate_topics,
+                "query": state["user_message"],
+            },
+            "document_id": state.get("document_id"),
+        }
+
+    # Step 3: Retrieve relevant chunks using the resolved retrieval query
     doc_id = state.get("document_id")
-    threshold = state.get("similarity_threshold")
+    threshold = state.get("similarity_threshold") or settings.uploaded_doc_similarity_threshold
     chunks = document_service.retrieve_document_chunks(
         session_id=session_id.strip(),
-        query=state["user_message"],
+        query=resolved_query,
         document_id=doc_id,
         threshold=threshold,
     )
@@ -468,9 +725,10 @@ def document_query_node(state: AgentState) -> dict:
             "retrieval_count": 0,
             "status": "not_found",
             "awaiting_entity": None,
+            "document_id": doc_id,
         }
 
-    # Step 3: Construct grounded, injection-resistant context
+    # Step 4: Construct grounded, injection-resistant context
     context_blocks = []
     for i, chunk in enumerate(chunks):
         fname = chunk.get("metadata", {}).get("filename", "document")
@@ -478,13 +736,28 @@ def document_query_node(state: AgentState) -> dict:
         context_blocks.append(f"--- Document Source: {fname} (Chunk {c_idx}) ---\n{chunk.get('text', '')}")
 
     context_str = "\n\n".join(context_blocks)
+
+    # Format conversational context if multi-turn history exists
+    history_turns = state.get("conversation_history", [])
+    history_blocks = []
+    if history_turns:
+        for turn in history_turns[-4:]:
+            role = "User" if turn.get("role") == "user" else "Assistant"
+            content = (turn.get("content") or "").strip()
+            if content:
+                history_blocks.append(f"{role}: {content}")
+    history_str = "\n".join(history_blocks)
+    conv_section = f"Prior Conversation History:\n{history_str}\n\n" if history_str else ""
+
+    # Original user message is strictly preserved in the grounded LLM prompt (Safeguard 2)
     user_prompt = (
+        f"{conv_section}"
         f"Retrieved Document Context (Untrusted Reference Data):\n{context_str}\n\n"
         f"User Question: {state['user_message']}\n\n"
         f"Answer:"
     )
 
-    # Step 4: Grounded LLM generation with safe failure handling
+    # Step 5: Grounded LLM generation with safe failure handling
     try:
         response_text = generate_text(SYSTEM_PROMPT_DOCUMENT, user_prompt)
         if not response_text or not response_text.strip():
@@ -503,6 +776,7 @@ def document_query_node(state: AgentState) -> dict:
         "retrieved_chunks": chunks,
         "document_sources": list(dict.fromkeys(c.get("metadata", {}).get("filename", "") for c in chunks)),
         "awaiting_entity": None,
+        "document_id": doc_id or (session_docs[0]["document_id"] if len(session_docs) == 1 else None),
     }
 
 
@@ -528,7 +802,7 @@ def dataset_analysis_node(state: AgentState) -> dict:
 
     if not dataset_id:
         return {
-            "final_response": "No active dataset is selected for analysis. Please upload or attach a dataset first.",
+            "final_response": "No active dataset is selected for analysis. To analyze data, please upload a dataset (CSV, XLSX, or JSON) or select an existing one using Switch Dataset.",
             "tool_used": "none",
             "retrieval_count": 0,
             "status": "not_found",
@@ -549,7 +823,7 @@ def dataset_analysis_node(state: AgentState) -> dict:
         }
     except dataset_service.DatasetNotFoundError:
         return {
-            "final_response": f"Dataset '{dataset_id}' not found.",
+            "final_response": "The requested dataset is no longer available or was removed. To perform data analysis, please upload a new dataset (CSV, XLSX, or JSON) or select an available dataset using Switch Dataset.",
             "tool_used": "none",
             "retrieval_count": 0,
             "status": "not_found",
@@ -713,7 +987,9 @@ State the verified findings in a concise, natural sentence. Do not alter, contra
     # 8. Bounded Analysis Table for UI Consumption (Phase 5 Invariant)
     analysis_table = None
     if result and result.rows and result.columns:
+        from app.analytics.chart_style import format_clean_metric_label
         col_names = [str(c) for c in result.columns[:30]]
+        display_col_names = [format_clean_metric_label(c) for c in col_names]
         table_rows = []
         for r in result.rows[:20]:
             row_vals = []
@@ -725,6 +1001,7 @@ State the verified findings in a concise, natural sentence. Do not alter, contra
             table_rows.append(row_vals)
         analysis_table = {
             "columns": col_names,
+            "display_columns": display_col_names,
             "rows": table_rows,
             "row_count": result.row_count,
         }
@@ -754,6 +1031,68 @@ State the verified findings in a concise, natural sentence. Do not alter, contra
     }
 
 
+def order_policy_node(state: AgentState) -> dict:
+    """
+    Deterministic Order-Policy Cross-Referencing Node.
+    Synthesizes actual order status and verified delivery date from the database
+    with policy terms from an uploaded document (or store FAQ fallback).
+    All calculations (elapsed days, window checks) are computed strictly in Python.
+    No LLM fabrication or arithmetic is involved.
+    """
+    order_id = state.get("order_id")
+    if order_id is None:
+        return {
+            "final_response": "Could you please share the order ID you'd like me to check return eligibility for?",
+            "tool_used": "none",
+            "retrieval_count": 0,
+            "status": "not_found",
+            "awaiting_entity": "order_id",
+        }
+
+    session_id = state.get("session_id")
+    doc_id = state.get("document_id")
+    ref_date = state.get("reference_date")
+
+    assessment = order_policy_service.assess_return_eligibility(
+        order_id=order_id,
+        session_id=session_id,
+        document_id=doc_id,
+        reference_date=ref_date,
+    )
+
+    if assessment.verdict == order_policy_service.VERDICT_UNKNOWN_ORDER:
+        status_val = "not_found"
+    elif assessment.verdict in (
+        order_policy_service.VERDICT_CONFLICTING_POLICY,
+        order_policy_service.VERDICT_INDETERMINATE_POLICY,
+        order_policy_service.VERDICT_INDETERMINATE_DELIVERY_DATE,
+    ):
+        status_val = "needs_clarification"
+    elif assessment.verdict == order_policy_service.VERDICT_MISSING_POLICY:
+        status_val = "not_found"
+    else:
+        status_val = "ok"
+
+    return {
+        "final_response": assessment.explanation,
+        "tool_used": "assess_return_eligibility",
+        "retrieval_count": 1 if assessment.policy_source else 0,
+        "status": status_val,
+        "awaiting_entity": None,
+        "eligibility_assessment": {
+            "verdict": assessment.verdict,
+            "order_id": assessment.order_id,
+            "product": assessment.product,
+            "order_status": assessment.order_status,
+            "delivery_date": str(assessment.delivery_date) if assessment.delivery_date else None,
+            "days_since_delivery": assessment.days_since_delivery,
+            "return_window_days": assessment.return_window_days,
+            "policy_source": assessment.policy_source,
+            "conditions": assessment.conditions,
+        },
+    }
+
+
 ROUTE_MAP = {
     INTENT_ORDER_STATUS: "order_status_node",
     INTENT_CUSTOMER_ORDERS: "customer_orders_node",
@@ -764,6 +1103,7 @@ ROUTE_MAP = {
     INTENT_DATA_QUERY: "data_query_node",
     INTENT_DOCUMENT_QUERY: "document_query_node",
     INTENT_DATASET_ANALYSIS: "dataset_analysis_node",
+    INTENT_ORDER_POLICY_CHECK: "order_policy_node",
 }
 
 

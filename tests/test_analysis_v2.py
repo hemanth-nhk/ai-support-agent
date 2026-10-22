@@ -44,12 +44,15 @@ def analytics_dataset(tmp_path, monkeypatch):
         "Dongle,Hardware,1500.0,300.0,15,2024-05-15\n"
     ).encode("utf-8")
 
+    import uuid
+    session_id = f"analytics-session-{uuid.uuid4().hex[:8]}"
+
     meta = dataset_service.ingest_dataset(
-        session_id="analytics-session-v2",
+        session_id=session_id,
         filename="company_analytics.csv",
         content_bytes=csv_content,
     )
-    return meta, "analytics-session-v2"
+    return meta, session_id
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +223,8 @@ def test_chat_derived_metric_response_contract(analytics_dataset):
     """Validates that Phase 6 derived metrics return Table, Finding, and Chart in /chat."""
     meta, session_id = analytics_dataset
     client = TestClient(app)
+    from app.api.session_security import sign_session_id
+    client.cookies.set("app_session_token", sign_session_id(session_id))
 
     payload = {
         "message": "What is the profit margin percentage by category as a bar chart?",
@@ -238,3 +243,58 @@ def test_chat_derived_metric_response_contract(analytics_dataset):
     assert len(data["table"]["rows"]) >= 1
     assert data["chart"] is not None
     assert data["chart"]["chart_type"] == "bar"
+
+
+def test_deterministic_profit_margin_fast_path_and_non_interception(analytics_dataset, monkeypatch):
+    """
+    Verifies that:
+    1. 'What is the profit margin percentage by category as a bar chart?' is intercepted deterministically,
+       producing a valid derived metric plan, non-empty table with profit margin percentage, and a bar chart.
+    2. Unrelated queries without profit-margin intent are not intercepted by this fast path.
+    3. Queries with explicit filters (e.g. 'where revenue > 1000') bypass the fast path to preserve filter semantics.
+    """
+    from app.analytics.planner import generate_analysis_plan
+    from app.analytics.compiler import compile_plan
+    from app.analytics.executor import execute_compiled_query
+
+    meta, session_id = analytics_dataset
+
+    # 1. Exact query: deterministic fast-path execution (no LLM call required)
+    q = "What is the profit margin percentage by category as a bar chart?"
+    plan = generate_analysis_plan(q, meta)
+
+    assert plan.requires_chart is True
+    assert plan.chart_type == "bar"
+    assert len(plan.derived_metrics) == 1
+    assert plan.derived_metrics[0].alias == "profit_margin_pct"
+    assert plan.derived_metrics[0].numerator == "profit"
+    assert plan.derived_metrics[0].denominator == "revenue"
+    assert len(plan.group_by) == 1
+    assert plan.group_by[0].column == "category"
+
+    compiled = compile_plan(plan, meta)
+    res = execute_compiled_query(compiled, meta.dataset_id, session_id, plan)
+    assert res.row_count >= 1
+    assert "profit_margin_pct" in res.columns
+    assert len(res.rows) == 2
+
+    # 2. Unrelated query without profit-margin intent: does not have derived_metrics
+    q_unrelated = "What is total units by category?"
+    plan_unrelated = generate_analysis_plan(q_unrelated, meta)
+    assert len(plan_unrelated.derived_metrics) == 0
+
+    # 3. Explicit filter query: bypasses fast path and delegates to LLM so filters are handled
+    called_llm = []
+
+    class DummyLLM:
+        def invoke(self, *args, **kwargs):
+            called_llm.append(True)
+            return type("Resp", (), {
+                "content": '{"group_by": [{"column": "category"}], "filters": [{"column": "revenue", "operator": ">", "value": 1000}], "aggregations": [{"column": "profit", "function": "sum"}]}'
+            })()
+
+    monkeypatch.setattr("app.analytics.planner.get_llm", lambda: DummyLLM())
+    q_filtered = "What is the profit margin percentage by category where revenue > 1000?"
+    plan_filtered = generate_analysis_plan(q_filtered, meta)
+    assert len(called_llm) == 1
+    assert any(f.column == "revenue" for f in plan_filtered.filters)

@@ -25,7 +25,16 @@ def _load_faq_documents() -> list[dict]:
         # "DEMO DATA" disclaimer line and empty chunks.
         raw_chunks = [c.strip() for c in text.split("\n\n") if c.strip()]
         chunks = [c for c in raw_chunks if not c.startswith("DEMO DATA")]
-        for i, chunk in enumerate(chunks):
+        if not chunks:
+            continue
+        # If the first chunk is a short title/header, attach it to subsequent content chunks
+        # so standalone titles don't get indexed without their policy body (DOC-01).
+        if len(chunks) > 1 and len(chunks[0].splitlines()) <= 2 and len(chunks[0]) < 60:
+            header = chunks[0]
+            content_chunks = [f"{header}:\n{c}" for c in chunks[1:]]
+        else:
+            content_chunks = chunks
+        for i, chunk in enumerate(content_chunks):
             docs.append({
                 "id": f"{filepath.stem}-{i}",
                 "text": chunk,

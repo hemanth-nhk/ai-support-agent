@@ -585,3 +585,231 @@ def test_run_agent_attachment_routing_and_removal(temp_chroma_dir, monkeypatch):
         assert res3["intent"] == INTENT_FAQ
         assert res3["tool_used"] == "retrieve_faq"
 
+
+# ============================================================================
+# Phase 11 Multi-Turn Conversational Document Intelligence Tests
+# ============================================================================
+
+def test_document_query_conversational_followup_resolves_correct_policy(temp_chroma_dir, monkeypatch):
+    """
+    Test Phase 11: Conversational follow-ups with pronouns ('that', 'it') resolve to
+    the correct policy section without cross-section contamination.
+    """
+    class ExtendedStubEmbeddingFunction(StubEmbeddingFunction):
+        vocab = VOCAB + [
+            "refresh", "exception", "exceptions", "vp", "engineering",
+            "travel", "expense", "remote", "lodging", "manager", "director",
+        ]
+        def __call__(self, input: Documents) -> Embeddings:
+            out = []
+            for text in input:
+                lowered = text.lower()
+                vec = [1.0 if word in lowered else 0.0 for word in self.vocab]
+                out.append(vec)
+            return out
+
+    stub_fn = ExtendedStubEmbeddingFunction()
+    monkeypatch.setattr(settings, "chroma_persist_dir", temp_chroma_dir)
+    monkeypatch.setattr(document_service, "get_embedding_function", lambda: stub_fn)
+
+    policy_content = (
+        b"Section 1: Hardware & Equipment Refresh Policy\n"
+        b"Employees may request a laptop refresh once every 36 months.\n"
+        b"Exceptions to the 36-month hardware refresh cycle require explicit approval from the Vice President of Engineering.\n\n"
+        b"Section 2: Corporate Travel & Meal Expense Policy\n"
+        b"Lodging is reimbursed up to $250. Exceptions require approval from the Department Manager.\n\n"
+        b"Section 3: Remote Work & Home Office Policy\n"
+        b"Hybrid remote work is allowed 2 days per week. Exceptions require approval from the Head of Human Resources."
+    )
+
+    doc_info = index_document(
+        session_id="sess_multi_turn_doc",
+        filename="company_policies.txt",
+        content_bytes=policy_content,
+        persist_dir=temp_chroma_dir,
+        embedding_fn=stub_fn,
+        chunk_size=200,
+        chunk_overlap=20,
+    )
+    doc_id = doc_info["document_id"]
+
+    captured_prompts = []
+
+    def mock_generate(sys_prompt, user_prompt):
+        captured_prompts.append(user_prompt)
+        if "Vice President of Engineering" in user_prompt:
+            return "Exceptions require approval from the Vice President of Engineering."
+        return "An employee may request a laptop refresh once every 36 months."
+
+    with patch("app.agent.nodes.generate_text", side_effect=mock_generate):
+        # Turn 1: Factual question
+        res1 = run_agent(
+            "How often can an employee request a new laptop under the hardware policy?",
+            session_id="sess_multi_turn_doc",
+            document_id=doc_id,
+        )
+        assert res1["status"] == "ok"
+        assert res1["intent"] == INTENT_DOCUMENT_QUERY
+        assert len(res1["conversation_history"]) == 2
+
+        # Turn 2: Anaphoric follow-up
+        res2 = run_agent(
+            "What are the exceptions to that?",
+            previous_state=res1,
+            session_id="sess_multi_turn_doc",
+            document_id=doc_id,
+        )
+        assert res2["status"] == "ok"
+        assert res2["intent"] == INTENT_DOCUMENT_QUERY
+        # Check that prompt preserved user question and included prior conversation
+        last_prompt = captured_prompts[-1]
+        assert "User Question: What are the exceptions to that?" in last_prompt
+        assert "Prior Conversation History:" in last_prompt
+        assert "Vice President of Engineering" in res2["final_response"]
+        assert "Department Manager" not in res2["final_response"]
+        assert "Human Resources" not in res2["final_response"]
+
+        # Turn 2B: Follow-up pronoun reference
+        res2b = run_agent(
+            "Who has to approve it?",
+            previous_state=res2,
+            session_id="sess_multi_turn_doc",
+            document_id=doc_id,
+        )
+        assert res2b["status"] == "ok"
+        assert "Vice President of Engineering" in res2b["final_response"]
+
+
+def test_document_query_ambiguous_antecedent_requests_clarification(temp_chroma_dir, monkeypatch):
+    """
+    Test Safeguard 1: When prior conversation context actively discusses multiple policies
+    and a bare pronoun is used, the agent requests clarification instead of arbitrarily guessing.
+    """
+    stub_fn = StubEmbeddingFunction()
+    monkeypatch.setattr(settings, "chroma_persist_dir", temp_chroma_dir)
+    monkeypatch.setattr(document_service, "get_embedding_function", lambda: stub_fn)
+
+    doc_info = index_document(
+        session_id="sess_ambig_test",
+        filename="policies.txt",
+        content_bytes=b"Corporate Travel & Meal Expense Policy\nRemote Work & Home Office Policy\n",
+        persist_dir=temp_chroma_dir,
+        embedding_fn=stub_fn,
+    )
+    doc_id = doc_info["document_id"]
+
+    # Simulate multi-topic conversational history
+    ambig_state = {
+        "session_id": "sess_ambig_test",
+        "document_id": doc_id,
+        "conversation_history": [
+            {
+                "role": "user",
+                "content": "Can I use my laptop when working remotely under the Corporate Travel & Meal Expense Policy?",
+            },
+            {
+                "role": "assistant",
+                "content": "The Corporate Travel & Meal Expense Policy covers lodging while the Remote Work & Home Office Policy covers hybrid hours.",
+            },
+        ],
+        "retrieved_chunks": [
+            {"text": "Section 2: Corporate Travel & Meal Expense Policy"},
+            {"text": "Section 3: Remote Work & Home Office Policy"},
+        ],
+    }
+
+    # Ask ambiguous follow-up
+    res = run_agent(
+        "What are the exceptions to that?",
+        previous_state=ambig_state,
+        session_id="sess_ambig_test",
+        document_id=doc_id,
+    )
+
+    # Must ask for clarification (Safeguard 1)
+    assert res["status"] == "clarification"
+    assert res["awaiting_entity"] == "document_topic"
+    assert "clarify which policy" in res["final_response"].lower()
+    assert "corporate travel" in res["final_response"].lower()
+    assert "remote work" in res["final_response"].lower()
+
+    # User answers the clarification
+    with patch("app.agent.nodes.generate_text", return_value="Exceptions to remote work require authorization from HR."):
+        clarif_res = run_agent(
+            "The remote work policy",
+            previous_state=res,
+            session_id="sess_ambig_test",
+            document_id=doc_id,
+        )
+        assert clarif_res["intent"] == INTENT_DOCUMENT_QUERY
+        assert clarif_res["status"] == "ok"
+        assert clarif_res["awaiting_entity"] is None
+        assert "authorization from HR" in clarif_res["final_response"]
+
+
+def test_document_query_unsupported_question_preserves_refusal(temp_chroma_dir, monkeypatch):
+    """
+    Test Safeguard 2: Unsupported questions are not answered with fabricated claims or
+    unrelated policy sections. The fail-closed refusal is strictly preserved.
+    """
+    stub_fn = StubEmbeddingFunction()
+    monkeypatch.setattr(settings, "chroma_persist_dir", temp_chroma_dir)
+    monkeypatch.setattr(document_service, "get_embedding_function", lambda: stub_fn)
+
+    doc_info = index_document(
+        session_id="sess_unsupported_test",
+        filename="hardware_policy.txt",
+        content_bytes=b"Section 1: Hardware & Equipment Refresh Policy\nLaptops are refreshed every 36 months.",
+        persist_dir=temp_chroma_dir,
+        embedding_fn=stub_fn,
+    )
+    doc_id = doc_info["document_id"]
+
+    t1_state = run_agent(
+        "How often can an employee request a new laptop under the hardware policy?",
+        session_id="sess_unsupported_test",
+        document_id=doc_id,
+    )
+
+    # Ask unsupported question (stock option vesting)
+    with patch(
+        "app.agent.nodes.generate_text",
+        return_value="The uploaded document does not contain information about the company stock option vesting schedule.",
+    ):
+        unsupported_res = run_agent(
+            "What is the company stock option vesting schedule?",
+            previous_state=t1_state,
+            session_id="sess_unsupported_test",
+            document_id=doc_id,
+        )
+        assert unsupported_res["intent"] == INTENT_DOCUMENT_QUERY
+        assert "does not contain" in unsupported_res["final_response"].lower()
+
+
+def test_document_query_session_isolation_multi_turn(temp_chroma_dir, monkeypatch):
+    """
+    Test Session Isolation: Follow-ups in Session B cannot access or resolve to
+    documents indexed in Session A.
+    """
+    stub_fn = StubEmbeddingFunction()
+    monkeypatch.setattr(settings, "chroma_persist_dir", temp_chroma_dir)
+    monkeypatch.setattr(document_service, "get_embedding_function", lambda: stub_fn)
+
+    # Session A indexes Hardware policy
+    index_document(
+        session_id="session_alpha_1",
+        filename="hardware_policy.txt",
+        content_bytes=b"Hardware policy: Laptops are refreshed every 36 months. Code: ALPHA_CONFIDENTIAL.",
+        persist_dir=temp_chroma_dir,
+        embedding_fn=stub_fn,
+    )
+
+    # Session B has no documents
+    res_b = run_agent(
+        "What are the exceptions to that?",
+        session_id="session_beta_2",
+    )
+    # Session B must fail closed because it has no documents in its session
+    assert res_b["status"] in ("not_found", "out_of_scope")
+    assert "ALPHA_CONFIDENTIAL" not in res_b["final_response"]
+    assert res_b.get("retrieval_count", 0) == 0

@@ -10,8 +10,14 @@ from app.agent.graph import run_agent
 from app.agent.router import classify_intent
 
 
+from app.config import settings
+
+TEST_API_KEY = "test-agent-key"
+
+
 def setup_module():
     seed(force=True)
+    settings.support_api_key = TEST_API_KEY
 
 
 def test_order_status_intent_classified_correctly():
@@ -63,13 +69,33 @@ def test_found_order_never_calls_llm_and_response_matches_data_exactly():
 
 def test_found_customer_orders_never_calls_llm():
     with patch("app.agent.nodes.generate_text") as mock_llm:
-        result = run_agent("What orders does customer 1 have?")
+        result = run_agent("What orders does customer 1 have?", api_key=TEST_API_KEY)
         assert result["status"] == "ok"
         assert result["tool_used"] == "get_customer_orders"
         assert result["retrieval_count"] == 2
         mock_llm.assert_not_called()
         assert "1001" in result["final_response"]
         assert "1002" in result["final_response"]
+
+
+def test_customer_orders_unauthorized_does_not_execute_tool():
+    with patch("app.agent.nodes.get_customer_orders") as mock_tool:
+        result = run_agent("What orders does customer 1 have?", api_key="wrong-key")
+        assert result["status"] == "error"
+        assert result["tool_used"] == "none"
+        assert result["retrieval_count"] == 0
+        assert "Invalid or missing API key" in result["final_response"]
+        mock_tool.assert_not_called()
+
+
+def test_customer_orders_missing_customer_id_returns_clarification_without_tool():
+    with patch("app.agent.nodes.get_customer_orders") as mock_tool:
+        result = run_agent("Show my orders", api_key=TEST_API_KEY)
+        assert result["status"] == "not_found"
+        assert result["awaiting_entity"] == "customer_id"
+        assert result["tool_used"] == "none"
+        assert "customer id" in result["final_response"].lower()
+        mock_tool.assert_not_called()
 
 
 def test_general_greeting_routes_to_general_node_and_uses_llm():
@@ -116,3 +142,20 @@ def test_ambiguity_order_and_refund_query():
     assert result["status"] == "clarification"
     assert result["tool_used"] == "none"
 
+
+def test_general_node_llm_exception_fallback():
+    """SEC-02: general_node returns friendly fallback if LLM times out or raises an exception."""
+    with patch("app.agent.nodes.generate_text", side_effect=TimeoutError("Ollama request timed out after 30.0s")):
+        result = run_agent("Hello there!")
+        assert result["intent"] == "GENERAL"
+        assert result["status"] == "ok"
+        assert "assist with store support" in result["final_response"].lower()
+
+
+def test_data_query_node_llm_exception_fallback():
+    """SEC-02: data_query_node returns safe error response if LLM parameter extraction fails or times out."""
+    with patch("app.agent.nodes.generate_text", side_effect=TimeoutError("Ollama request timed out after 30.0s")):
+        result = run_agent("find all orders for laptop", api_key=TEST_API_KEY)
+        assert result["intent"] == "DATA_QUERY"
+        assert result["status"] == "error"
+        assert "encountered an issue processing your query filters" in result["final_response"].lower()

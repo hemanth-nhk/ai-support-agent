@@ -64,6 +64,7 @@ def apply_plan_mutation(
         plan_dict["outlier_analysis"] = None
         plan_dict["correlations"] = []
         plan_dict["quantiles"] = []
+        plan_dict["selection_order_by"] = []
         if mutation.group_by_delta:
             plan_dict["group_by"] = [mutation.group_by_delta.to_group_by_clause().model_dump()]
         if mutation.metric_delta:
@@ -186,6 +187,10 @@ def apply_plan_mutation(
                 for ob in plan_dict["order_by"]:
                     if ob.get("target") in old_targets:
                         ob["target"] = new_target
+                if plan_dict.get("selection_order_by"):
+                    for sob in plan_dict["selection_order_by"]:
+                        if sob.get("target") in old_targets:
+                            sob["target"] = new_target
 
     # 10. CHANGE_SORT: Replace ordering clauses
     elif mtype == PlanMutationType.CHANGE_SORT:
@@ -193,6 +198,12 @@ def apply_plan_mutation(
             raise MutationError("CHANGE_SORT requires 'sort_delta'.")
         new_ob = mutation.sort_delta.to_order_by_clause()
         plan_dict["order_by"] = [new_ob.model_dump()]
+        # Option B: Preserve cohort membership when sorting
+        if previous_plan.selection_order_by:
+            plan_dict["selection_order_by"] = [sob.model_dump() for sob in previous_plan.selection_order_by]
+        elif previous_plan.order_by and previous_plan.limit < 500:
+            # Legacy plan compatibility: infer cohort selection from original order_by
+            plan_dict["selection_order_by"] = [ob.model_dump() for ob in previous_plan.order_by]
 
     # 11. CHANGE_LIMIT: Modify row limit
     elif mtype == PlanMutationType.CHANGE_LIMIT:

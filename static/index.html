@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Support Agent - Your Online Store Assistant</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=2.1" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -131,7 +131,7 @@
     <!-- Main Workspace Container: Left Sidebar + Center Chat + Right Settings -->
     <div class="main-body">
       <!-- 1. Left Sidebar -->
-      <aside class="sidebar-left">
+      <aside class="sidebar-left" id="sidebarLeft">
         <!-- UI-2: Support & Policies Sidebar Panel -->
         <div class="sidebar-panel" id="supportSidebarPanel">
           <!-- Navigation Menu -->
@@ -220,19 +220,36 @@
 
         <!-- UI-2: Dataset Intelligence Sidebar Panel -->
         <div class="sidebar-panel" id="datasetSidebarPanel" style="display: none;">
-          <div class="sidebar-section-header">
-            <span class="sidebar-section-title">Dataset Context</span>
-          </div>
-
-          <div class="sidebar-dataset-actions">
+          <div class="sidebar-dataset-top-actions">
+            <button type="button" class="btn-sidebar-new-analysis" id="sidebarNewAnalysisBtn" title="Start a new analysis thread" aria-label="New Analysis">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+              <span>New Analysis</span>
+            </button>
             <button type="button" class="btn-sidebar-upload" id="sidebarDatasetUploadBtn" title="Upload dataset" aria-label="Upload dataset">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                 <polyline points="17 8 12 3 7 8"></polyline>
                 <line x1="12" y1="3" x2="12" y2="15"></line>
               </svg>
-              <span>Upload Dataset</span>
+              <span>Upload</span>
             </button>
+          </div>
+
+          <!-- Dynamic Recent Analyses Section -->
+          <div class="recent-analyses-container" id="recentAnalysesContainer">
+            <div class="sidebar-section-header">
+              <span class="sidebar-section-title">Recent Analyses</span>
+            </div>
+            <div class="recent-analyses-list" id="recentAnalysesList">
+              <!-- Dynamically populated from SQLite via /conversations?workspace_mode=dataset -->
+            </div>
+          </div>
+
+          <div class="sidebar-section-header" style="margin-top: 6px;">
+            <span class="sidebar-section-title">Dataset Context</span>
           </div>
 
           <!-- Empty Dataset State in Sidebar -->
@@ -253,6 +270,12 @@
                   <polyline points="1 4 1 10 7 10"></polyline>
                   <polyline points="23 20 23 14 17 14"></polyline>
                   <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"></path>
+                </svg>
+              </button>
+              <button type="button" class="sidebar-icon-btn" id="sidebarRemoveDatasetBtn" title="Remove Dataset from workspace" aria-label="Remove active dataset">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
                 </svg>
               </button>
             </div>
@@ -290,16 +313,21 @@
 
           <!-- Analytical Session Footer in Sidebar -->
           <div class="sidebar-footer">
-            <div class="session-card">
+            <div class="session-card" id="datasetSessionCard" title="Multi-turn analytical memory status">
               <span class="session-pulse-dot" style="background: #38bdf8;"></span>
               <div class="session-details">
                 <span class="session-title">Analytics Memory</span>
-                <span class="session-uuid" id="datasetSessionUuidText">Phase 8 Active</span>
+                <span class="session-uuid" id="datasetSessionUuidText" title="No active analysis">Ready for Analysis</span>
               </div>
             </div>
           </div>
         </div>
       </aside>
+
+      <!-- Desktop Splitter / Resize Handle (Desktop Only) -->
+      <div class="sidebar-resizer" id="sidebarResizer" role="separator" aria-orientation="vertical" aria-label="Resize Left Sidebar" title="Drag to resize sidebar, double-click to reset">
+        <div class="resizer-handle-line"></div>
+      </div>
 
       <!-- 2. Center Chat Workspace -->
       <main class="chat-center" id="chatMain">
@@ -581,13 +609,27 @@
                 </svg>
                 <span id="toggleSchemaTableBtnText">Schema Table</span>
               </button>
-              <button type="button" id="workspaceSwitchBtn" class="nav-btn btn-pill-outline" style="display: none;" aria-label="Switch Dataset">
+              <button type="button" id="workspaceSwitchBtn" class="nav-btn btn-pill-outline" style="display: none;" title="Switch active dataset" aria-label="Switch Dataset">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="1 4 1 10 7 10"></polyline>
                   <polyline points="23 20 23 14 17 14"></polyline>
                   <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"></path>
                 </svg>
                 <span>Switch Dataset</span>
+              </button>
+              <button type="button" id="workspaceRemoveBtn" class="nav-btn btn-pill-outline" style="display: none;" title="Detach dataset from workspace" aria-label="Remove Dataset">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+                <span>Remove</span>
+              </button>
+              <button type="button" id="workspaceDeleteDatasetBtn" class="nav-btn btn-pill-outline btn-danger-outline" style="display: none;" title="Permanently delete dataset from storage" aria-label="Delete Dataset">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"></polyline>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+                <span>Delete</span>
               </button>
             </div>
           </div>
@@ -672,12 +714,19 @@
                   </div>
                 </div>
                 <div class="dataset-chat-header-actions">
-                  <button type="button" id="clearDatasetChatBtn" class="btn-micro" title="Start fresh analytical conversation for this dataset" aria-label="Clear analytical conversation">
+                  <button type="button" id="clearDatasetChatBtn" class="btn-micro" title="Clear conversation turns" aria-label="Clear analytical conversation">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <polyline points="3 6 5 6 21 6"></polyline>
                       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
                     </svg>
                     <span>Clear Chat</span>
+                  </button>
+                  <button type="button" id="deleteDatasetChatBtn" class="btn-micro danger" title="Delete this analysis permanently" aria-label="Delete analytical conversation">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <line x1="18" y1="6" x2="6" y2="18"></line>
+                      <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                    <span>Delete</span>
                   </button>
                 </div>
               </div>
@@ -792,16 +841,36 @@
 
   <!-- Delete Confirmation Modal -->
   <div class="modal-backdrop" id="deleteConfirmModal" style="display: none;">
-    <div class="modal-card-dialog">
+    <div class="modal-card-dialog" role="dialog" aria-modal="true" aria-labelledby="deleteModalTitle">
       <div class="dialog-header">
-        <h3 class="dialog-title">Delete Conversation</h3>
+        <h3 class="dialog-title" id="deleteModalTitle">Delete Conversation</h3>
       </div>
       <div class="dialog-body">
-        <p>Are you sure you want to permanently delete this conversation? This action cannot be undone.</p>
+        <p id="deleteModalMessage">Are you sure you want to permanently delete this conversation? This action cannot be undone.</p>
       </div>
       <div class="dialog-footer">
         <button id="cancelDeleteBtn" class="btn btn-secondary" aria-label="Cancel deletion">Cancel</button>
         <button id="confirmDeleteBtn" class="btn btn-danger" aria-label="Confirm permanent deletion">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Switch Dataset Modal -->
+  <div class="modal-backdrop" id="switchDatasetModal" style="display: none;">
+    <div class="modal-card-dialog modal-dataset-dialog" role="dialog" aria-modal="true" aria-labelledby="switchDatasetTitle">
+      <div class="dialog-header">
+        <h3 class="dialog-title" id="switchDatasetTitle">Switch Dataset</h3>
+        <button type="button" id="closeSwitchDatasetModalBtn" class="modal-close-btn" aria-label="Close switch dataset modal">&times;</button>
+      </div>
+      <div class="dialog-body">
+        <p class="dialog-desc">Select an uploaded dataset to analyze or upload a new file.</p>
+        <div id="switchDatasetList" class="switch-dataset-list">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+      <div class="dialog-footer">
+        <button type="button" id="switchUploadNewBtn" class="btn btn-primary" aria-label="Upload New Dataset">Upload New</button>
+        <button type="button" id="cancelSwitchDatasetBtn" class="btn btn-secondary" aria-label="Cancel">Cancel</button>
       </div>
     </div>
   </div>
@@ -823,37 +892,43 @@
     </div>
   </div>
 
-  <!-- Full Result Table Modal (UI-1) -->
+  <!-- Full Result Table Modal (UI-1 Polish) -->
   <div class="modal-backdrop" id="tableExpandModal" style="display: none;">
-    <div class="modal-card-dialog modal-table-dialog">
-      <div class="dialog-header">
-        <div class="dialog-title-wrap">
-          <span class="dialog-icon">📋</span>
-          <h3 class="dialog-title" id="modalTableTitle">Query Result Data</h3>
-          <span class="badge-count" id="modalTableRowCount">0 rows</span>
-        </div>
-        <div class="dialog-header-actions">
-          <button type="button" id="modalTableExportBtn" class="btn btn-secondary btn-sm" title="Export raw CSV data" aria-label="Export raw CSV data">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-              <polyline points="7 10 12 15 17 10"></polyline>
-              <line x1="12" y1="15" x2="12" y2="3"></line>
-            </svg>
-            <span>Export CSV</span>
-          </button>
+    <div class="modal-card-dialog modal-table-dialog" role="dialog" aria-modal="true" aria-labelledby="modalTableTitle">
+      <div class="modal-table-header">
+        <div class="modal-table-header-top">
+          <h3 class="dialog-title" id="modalTableTitle">View Results</h3>
           <button type="button" id="closeTableModalBtn" class="modal-close-btn" aria-label="Close table modal">&times;</button>
         </div>
+        <div class="modal-table-subtitle" id="modalTableSubtitle">Query Result Data</div>
+        <div class="modal-table-meta" id="modalTableMeta">0 rows · 0 columns</div>
       </div>
-      <div class="dialog-body table-modal-body">
+      <div class="table-modal-body">
         <div class="table-modal-toolbar">
-          <input
-            type="text"
-            id="modalTableSearchInput"
-            class="modal-search-input"
-            placeholder="Filter rows..."
-            aria-label="Filter rows"
-          />
-          <span class="modal-filtered-status" id="modalTableFilteredStatus">Showing all rows</span>
+          <div class="table-modal-search-wrap">
+            <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input
+              type="text"
+              id="modalTableSearchInput"
+              class="modal-search-input"
+              placeholder="Search rows..."
+              aria-label="Search rows"
+            />
+          </div>
+          <div class="table-modal-actions">
+            <span class="modal-filtered-status" id="modalTableFilteredStatus" style="display: none;"></span>
+            <button type="button" id="modalTableExportBtn" class="btn btn-secondary btn-sm" title="Export CSV" aria-label="Export CSV">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              <span>Export CSV</span>
+            </button>
+          </div>
         </div>
         <div class="table-scroll-wrap modal-table-scroll" id="modalTableContainer">
           <table class="analysis-result-table" id="modalResultTable">
@@ -862,15 +937,12 @@
           </table>
         </div>
       </div>
-      <div class="dialog-footer">
-        <button id="closeTableModalBottomBtn" class="btn btn-primary" aria-label="Close table modal">Close</button>
-      </div>
     </div>
   </div>
 
   <!-- Toast Container -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=2.1"></script>
 </body>
 </html>

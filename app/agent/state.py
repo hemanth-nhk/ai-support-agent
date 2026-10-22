@@ -18,6 +18,7 @@ class AgentState(TypedDict, total=False):
     customer_id: Optional[int]
     document_id: Optional[str]
     dataset_id: Optional[str]
+    workspace_mode: Optional[str]
     pending_analysis: Optional[dict]
     resolved_metric: Optional[str]
     active_analysis_plan: Optional[dict]
@@ -38,4 +39,6 @@ class AgentState(TypedDict, total=False):
     final_response: str
     status: str                    # "ok" | "not_found" | "out_of_scope" | "clarification" | "needs_clarification" | "error"
     api_key: Optional[str]
+    reference_date: Optional[object]
+    eligibility_assessment: Optional[dict]
 

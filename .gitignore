@@ -11,3 +11,6 @@ data/charts/
 *.egg-info/
 .vscode/
 .idea/
+*.png
+scratch/
+phase_13_investigation_report.md

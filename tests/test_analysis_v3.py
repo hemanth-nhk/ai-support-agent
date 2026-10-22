@@ -162,9 +162,8 @@ def test_grounded_result_zero_variance_explanation(phase7_dataset):
 # End-to-End Chat API Response Contract Tests
 # ---------------------------------------------------------------------------
 
-def test_chat_rolling_window_response_contract(phase7_dataset):
+def test_chat_rolling_window_response_contract(phase7_dataset, client):
     meta, session_id = phase7_dataset
-    client = TestClient(app)
 
     payload = {
         "message": "Plot 3-day rolling average amount as a line chart",
@@ -186,9 +185,8 @@ def test_chat_rolling_window_response_contract(phase7_dataset):
     assert data["chart"]["chart_type"] == "line"
 
 
-def test_chat_outlier_response_contract(phase7_dataset):
+def test_chat_outlier_response_contract(phase7_dataset, client):
     meta, session_id = phase7_dataset
-    client = TestClient(app)
 
     payload = {
         "message": "Show transactions with amount > 2.0 standard deviations from the mean",

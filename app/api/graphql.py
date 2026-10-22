@@ -30,7 +30,12 @@ def _to_order_type(order_dict: dict) -> Order:
 @strawberry.type
 class Query:
     @strawberry.field
-    def order(self, id: int) -> Optional[Order]:
+    def order(self, info: Info, id: int) -> Optional[Order]:
+        request = info.context["request"]
+        provided_key = request.headers.get("x-api-key")
+        if not check_api_key(provided_key):
+            raise Exception("Invalid or missing API key for order.")
+
         try:
             order_dict = order_service.get_order(id)
         except order_service.OrderNotFoundError:

@@ -73,9 +73,7 @@ def isolated_pivot_env(monkeypatch):
     shutil.rmtree(temp_charts, ignore_errors=True)
 
 
-@pytest.fixture
-def client():
-    return TestClient(app)
+# (Shared client fixture provided by tests/conftest.py)
 
 
 def _upload_dataset(session_id: str, csv_content: str = SAMPLE_PIVOT_CSV) -> str:

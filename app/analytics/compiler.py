@@ -12,6 +12,7 @@ from app.analytics.schemas import (
     AggregationFunction,
     DateTrunc,
     FilterOperator,
+    OrderByClause,
     ColumnProfile,
     DatasetMetadata,
     DerivedMetric,
@@ -262,6 +263,45 @@ ORDER BY {row_dim_ident} {order_dir}
 LIMIT {clamped_max_rows}"""
 
     return CompiledQuery(sql=pivot_sql.strip(), parameters=[])
+
+
+def _resolve_order_parts(
+    order_clauses: list[OrderByClause],
+    available_sort_targets: set[str],
+    col_to_alias: dict[str, str],
+) -> list[str]:
+    order_parts = []
+    for o in order_clauses:
+        target = o.target
+        resolved_target = None
+        if target in available_sort_targets:
+            resolved_target = target
+        elif target in col_to_alias and col_to_alias[target] in available_sort_targets:
+            resolved_target = col_to_alias[target]
+        elif target.lower() in col_to_alias and col_to_alias[target.lower()] in available_sort_targets:
+            resolved_target = col_to_alias[target.lower()]
+        else:
+            matched = next((ast for ast in available_sort_targets if ast.lower() == target.lower()), None)
+            if matched:
+                resolved_target = matched
+            else:
+                for k, v in col_to_alias.items():
+                    if (target.lower() in k.lower() or k.lower() in target.lower()) and v in available_sort_targets:
+                        resolved_target = v
+                        break
+                if not resolved_target:
+                    for ast in available_sort_targets:
+                        if target.lower() in ast.lower() or ast.lower() in target.lower():
+                            resolved_target = ast
+                            break
+                if not resolved_target:
+                    raise PlanValidationError(
+                        f"Order by target '{o.target}' is not in selected projection or aliases. Available: {sorted(available_sort_targets)}."
+                    )
+        target_ident = escape_identifier(resolved_target)
+        direction = "DESC" if o.descending else "ASC"
+        order_parts.append(f"{target_ident} {direction} NULLS LAST")
+    return order_parts
 
 
 def compile_plan(plan: AnalysisPlan, metadata: DatasetMetadata) -> CompiledQuery:
@@ -745,47 +785,68 @@ def compile_plan(plan: AnalysisPlan, metadata: DatasetMetadata) -> CompiledQuery
     if group_by_items:
         sql_parts.append(f"GROUP BY {', '.join(group_by_items)}")
 
-    # 5. Validate and Compile OrderBy
-    if plan.order_by:
-        col_to_alias: dict[str, str] = {}
-        for agg in plan.aggregations:
-            alias = agg.alias or (f"{agg.function.value}_{agg.column}" if agg.column else "count_rows")
-            if agg.column:
-                col_to_alias[agg.column] = alias
-                col_to_alias[agg.column.lower()] = alias
-            col_to_alias[alias] = alias
-            col_to_alias[alias.lower()] = alias
+    # 5. Validate and Compile OrderBy / Cohort Selection
+    col_to_alias: dict[str, str] = {}
+    for agg in plan.aggregations:
+        alias = agg.alias or (f"{agg.function.value}_{agg.column}" if agg.column else "count_rows")
+        if agg.column:
+            col_to_alias[agg.column] = alias
+            col_to_alias[agg.column.lower()] = alias
+        col_to_alias[alias] = alias
+        col_to_alias[alias.lower()] = alias
 
-        for gb in plan.group_by:
-            col_to_alias[gb.column] = gb.column
-            col_to_alias[gb.column.lower()] = gb.column
+    for gb in plan.group_by:
+        col_to_alias[gb.column] = gb.column
+        col_to_alias[gb.column.lower()] = gb.column
 
-        order_parts = []
-        for o in plan.order_by:
-            target = o.target
-            resolved_target = None
-            if target in available_sort_targets:
-                resolved_target = target
-            elif target in col_to_alias and col_to_alias[target] in available_sort_targets:
-                resolved_target = col_to_alias[target]
-            elif target.lower() in col_to_alias and col_to_alias[target.lower()] in available_sort_targets:
-                resolved_target = col_to_alias[target.lower()]
-            else:
-                matched = next((ast for ast in available_sort_targets if ast.lower() == target.lower()), None)
-                if matched:
-                    resolved_target = matched
-                else:
-                    raise PlanValidationError(
-                        f"Order by target '{o.target}' is not in selected projection or aliases. Available: {sorted(available_sort_targets)}."
-                    )
-            target_ident = escape_identifier(resolved_target)
-            direction = "DESC" if o.descending else "ASC"
-            order_parts.append(f"{target_ident} {direction} NULLS LAST")
-        sql_parts.append(f"ORDER BY {', '.join(order_parts)}")
-
-    # 6. Apply Clamped LIMIT
     clamped_limit = max(1, min(plan.limit, 500))
-    sql_parts.append(f"LIMIT {clamped_limit}")
 
-    final_sql = "\n".join(sql_parts)
-    return CompiledQuery(sql=final_sql, parameters=parameters)
+    # Determine whether cohort selection differs from display ordering
+    has_selection = bool(plan.selection_order_by)
+    selection_differs = False
+    if has_selection and plan.order_by:
+        if len(plan.selection_order_by) != len(plan.order_by):
+            selection_differs = True
+        else:
+            for s_ob, d_ob in zip(plan.selection_order_by, plan.order_by):
+                if s_ob.descending != d_ob.descending or s_ob.target.lower() != d_ob.target.lower():
+                    selection_differs = True
+                    break
+
+    if has_selection and selection_differs:
+        # Option B: Dual-level ranking via DuckDB CTE
+        # Inner cohort query selects top/bottom cohort by selection_order_by + limit
+        # Outer presentation query orders the cohort by display order_by
+        selection_parts = _resolve_order_parts(plan.selection_order_by, available_sort_targets, col_to_alias)
+        display_parts = _resolve_order_parts(plan.order_by, available_sort_targets, col_to_alias)
+
+        inner_sql_parts = [f"{select_sql} FROM source_table"]
+        if where_clauses:
+            inner_sql_parts.append(f"WHERE {' AND '.join(where_clauses)}")
+        if group_by_items:
+            inner_sql_parts.append(f"GROUP BY {', '.join(group_by_items)}")
+        inner_sql_parts.append(f"ORDER BY {', '.join(selection_parts)}")
+        inner_sql_parts.append(f"LIMIT {clamped_limit}")
+        inner_sql = "\n  ".join(inner_sql_parts)
+
+        final_sql = (
+            f"WITH selected_cohort AS (\n"
+            f"  {inner_sql}\n"
+            f")\n"
+            f"SELECT *\n"
+            f"FROM selected_cohort\n"
+            f"ORDER BY {', '.join(display_parts)}"
+        )
+        return CompiledQuery(sql=final_sql, parameters=parameters)
+    else:
+        # Single-level query: use order_by (or selection_order_by if order_by is empty)
+        effective_order = plan.order_by if plan.order_by else plan.selection_order_by
+        if effective_order:
+            order_parts = _resolve_order_parts(effective_order, available_sort_targets, col_to_alias)
+            sql_parts.append(f"ORDER BY {', '.join(order_parts)}")
+
+        # 6. Apply Clamped LIMIT
+        sql_parts.append(f"LIMIT {clamped_limit}")
+
+        final_sql = "\n".join(sql_parts)
+        return CompiledQuery(sql=final_sql, parameters=parameters)

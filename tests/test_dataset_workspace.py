@@ -51,7 +51,7 @@ def test_analysis_table_model():
     assert dumped["row_count"] == 2
 
 
-def test_dataset_query_returns_bounded_table_and_chart(sample_sales_dataset):
+def test_dataset_query_returns_bounded_table_and_chart(sample_sales_dataset, client):
     """
     Verifies that asking for top products returns:
     1. Finding in 'response'
@@ -60,7 +60,6 @@ def test_dataset_query_returns_bounded_table_and_chart(sample_sales_dataset):
     4. No raw SQL or SQL execution duration exposed
     """
     meta, session_id = sample_sales_dataset
-    client = TestClient(app)
 
     payload = {
         "message": "Show the top 25 products by revenue as a bar chart",
@@ -101,7 +100,7 @@ def test_dataset_query_returns_bounded_table_and_chart(sample_sales_dataset):
     assert "query" not in data
 
 
-def test_cell_string_truncation_bound(tmp_path, monkeypatch):
+def test_cell_string_truncation_bound(tmp_path, monkeypatch, client):
     """Verifies that cells with long string values are safely bounded to <= 100 chars."""
     monkeypatch.setattr(settings, "datasets_dir", str(tmp_path))
 
@@ -114,7 +113,6 @@ def test_cell_string_truncation_bound(tmp_path, monkeypatch):
         content_bytes=csv_bytes,
     )
 
-    client = TestClient(app)
     res = client.post(
         "/chat",
         json={

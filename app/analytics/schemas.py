@@ -35,6 +35,8 @@ class DatasetMetadata(BaseModel):
 
 class DatasetUploadResponse(BaseModel):
     dataset_id: str
+    session_id: Optional[str] = None
+    session_token: Optional[str] = None
     filename: str
     format: str
     row_count: int
@@ -122,6 +124,16 @@ class AggregationClause(BaseModel):
     quantile: Optional[float] = Field(
         default=None, description="Quantile parameter for PERCENTILE_CONT (0.0 to 1.0)"
     )
+
+    @field_validator("function", mode="before")
+    @classmethod
+    def normalize_function(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v_low = v.lower().strip()
+            if v_low == "mean":
+                return "avg"
+            return v_low
+        return v
 
     @model_validator(mode="after")
     def validate_quantile_usage(self) -> "AggregationClause":
@@ -244,6 +256,13 @@ class RollingWindowSpec(BaseModel):
     partition_by: list[str] = Field(default_factory=list, description="Categorical dimension columns to partition the window")
     alias: Optional[str] = Field(default=None, description="Output alias for the rolling metric")
 
+    @field_validator("partition_by", mode="before")
+    @classmethod
+    def normalize_partition_by(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        return v
+
 
 class CumulativeFunction(str, Enum):
     SUM = "sum"
@@ -276,6 +295,13 @@ class OutlierSpec(BaseModel):
     filter_outliers_only: bool = Field(default=True, description="If True, filters output rows to only outliers (abs(z_score) >= threshold)")
     alias: Optional[str] = Field(default=None, description="Base alias prefix for outlier columns")
 
+    @field_validator("partition_by", mode="before")
+    @classmethod
+    def normalize_partition_by(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        return v
+
 
 class QuantileSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -285,6 +311,13 @@ class QuantileSpec(BaseModel):
     order_descending: bool = Field(default=False, description="Whether higher values get bucket 1 (True) or bucket N (False)")
     partition_by: list[str] = Field(default_factory=list, description="Optional partition dimensions")
     alias: Optional[str] = Field(default=None, description="Output alias for quantile bucket number")
+
+    @field_validator("partition_by", mode="before")
+    @classmethod
+    def normalize_partition_by(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        return v
 
 
 class AnalysisPlan(BaseModel):
@@ -322,6 +355,9 @@ class AnalysisPlan(BaseModel):
     )
 
     order_by: list[OrderByClause] = Field(default_factory=list, description="Sort order clauses")
+    selection_order_by: list[OrderByClause] = Field(
+        default_factory=list, description="Sort order clauses for Top-N/Bottom-N cohort selection"
+    )
     limit: int = Field(default=50, ge=1, le=500, description="Max rows to return (clamped 1-500)")
     requires_chart: bool = Field(default=False, description="Whether visualization is requested")
     chart_type: Optional[Literal["bar", "line", "scatter", "histogram", "heatmap"]] = Field(
@@ -393,6 +429,7 @@ class ChartArtifact(BaseModel):
 
 class AnalysisTable(BaseModel):
     columns: list[str]
+    display_columns: Optional[list[str]] = None
     rows: list[list[Any]]
     row_count: int
 

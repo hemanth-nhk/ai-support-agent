@@ -89,9 +89,7 @@ def single_metric_dataset(monkeypatch):
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-@pytest.fixture
-def client():
-    return TestClient(app)
+# (Shared client fixture provided by tests/conftest.py)
 
 
 # ---------------------------------------------------------------------------
@@ -291,10 +289,9 @@ def test_chat_endpoint_session_isolation(client, multi_metric_dataset):
             "dataset_id": metadata.dataset_id,
         },
     )
-    assert res.status_code == 200
+    assert res.status_code == 403
     data = res.json()
-    assert data["status"] == "error"
-    assert "access denied" in data["response"].lower()
+    assert "access denied" in data.get("detail", "").lower() or "different session" in data.get("detail", "").lower()
 
 
 # ---------------------------------------------------------------------------

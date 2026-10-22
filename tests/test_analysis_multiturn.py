@@ -37,9 +37,7 @@ def isolated_multiturn_env(monkeypatch):
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-@pytest.fixture
-def client():
-    return TestClient(app)
+# (Shared client fixture provided by tests/conftest.py)
 
 
 def _upload_test_dataset(client: TestClient, session_id: str, filename: str, csv_data: str) -> str:
@@ -324,3 +322,358 @@ def test_grounded_findings_asserted_against_duckdb_results(client: TestClient):
     assert resp2["status"] == "ok"
     assert "Furniture" in resp2["response"]
     assert "1000" in resp2["response"] or "1,000" in resp2["response"]
+
+
+SAMPLE_REGION_SALES_CSV = """region,product,status,order_date,sales,profit
+North,Widget,delivered,2024-01-01,100.0,20.0
+North,Gadget,delivered,2024-01-02,200.0,50.0
+South,Widget,delivered,2024-01-03,150.0,30.0
+South,Gadget,pending,2024-01-04,250.0,60.0
+East,Widget,delivered,2024-01-05,300.0,70.0
+West,Gadget,delivered,2024-01-06,400.0,90.0
+"""
+
+
+def test_multiturn_unrestricted_breakdown_clears_inherited_filter_on_grouping_column(client: TestClient):
+    """
+    Verifies that an unrestricted breakdown request ('Plot a bar chart of total sales by region')
+    changes the grouping dimension to 'region' and clears an inherited 'region = North' filter.
+    """
+    session_id = "sess-unrestricted-1"
+    ds_id = _upload_test_dataset(client, session_id, "region_sales.csv", SAMPLE_REGION_SALES_CSV)
+
+    # Turn 1: Show top products by sales
+    r1 = client.post("/chat", json={"message": "Show the top 2 products by sales.", "session_id": session_id, "dataset_id": ds_id})
+    assert r1.status_code == 200
+    plan1 = _sessions[session_id]["active_analysis_plan"]
+    assert plan1["group_by"][0]["column"] == "product"
+
+    # Turn 2: Filter to only the North region
+    r2 = client.post("/chat", json={"message": "Filter to only the North region.", "session_id": session_id})
+    assert r2.status_code == 200
+    plan2 = _sessions[session_id]["active_analysis_plan"]
+    assert plan2["group_by"][0]["column"] == "product"
+    assert any(f["column"].lower() == "region" and f["value"] == "North" for f in plan2["filters"])
+
+    # Turn 3: Plot a bar chart of total sales by region
+    r3 = client.post("/chat", json={"message": "Plot a bar chart of total sales by region.", "session_id": session_id})
+    assert r3.status_code == 200
+    plan3 = _sessions[session_id]["active_analysis_plan"]
+
+    # Invariants:
+    # 1. Grouping dimension must switch to region
+    assert plan3["group_by"][0]["column"] == "region"
+    # 2. Inherited region filter must be completely cleared
+    assert not any(f["column"].lower() == "region" for f in plan3["filters"])
+    # 3. Chart properties must be set
+    assert plan3["requires_chart"] is True
+    assert plan3["chart_type"] == "bar"
+
+
+def test_multiturn_explicit_in_turn_filter_on_grouping_column_is_retained(client: TestClient):
+    """
+    Verifies that an explicit in-turn constraint ('Plot sales by region for North only')
+    switches grouping to 'region' while preserving the explicit 'region = North' filter.
+    """
+    session_id = "sess-explicit-filter-1"
+    ds_id = _upload_test_dataset(client, session_id, "region_sales.csv", SAMPLE_REGION_SALES_CSV)
+
+    # Turn 1: Show top products by sales
+    client.post("/chat", json={"message": "Show the top 2 products by sales.", "session_id": session_id, "dataset_id": ds_id})
+
+    # Turn 2: Filter to only the North region
+    client.post("/chat", json={"message": "Filter to only the North region.", "session_id": session_id})
+
+    # Turn 3: Plot sales by region for North only
+    r3 = client.post("/chat", json={"message": "Plot sales by region for North only", "session_id": session_id})
+    assert r3.status_code == 200
+    plan3 = _sessions[session_id]["active_analysis_plan"]
+
+    assert plan3["group_by"][0]["column"] == "region"
+    region_filters = [f for f in plan3["filters"] if f["column"].lower() == "region"]
+    assert len(region_filters) == 1
+    assert region_filters[0]["value"] == "North"
+    assert region_filters[0]["operator"] in ("==", FilterOperator.EQ.value)
+
+
+def test_multiturn_exclusion_filter_on_grouping_column_is_constructed(client: TestClient):
+    """
+    Verifies that an exclusion request ('Plot sales by region except North')
+    constructs a 'region != North' filter instead of blindly clearing or preserving the EQ filter.
+    """
+    session_id = "sess-exclusion-1"
+    ds_id = _upload_test_dataset(client, session_id, "region_sales.csv", SAMPLE_REGION_SALES_CSV)
+
+    client.post("/chat", json={"message": "Show top products by sales.", "session_id": session_id, "dataset_id": ds_id})
+    client.post("/chat", json={"message": "Filter to only the North region.", "session_id": session_id})
+
+    r3 = client.post("/chat", json={"message": "Plot sales by region except North", "session_id": session_id})
+    assert r3.status_code == 200
+    plan3 = _sessions[session_id]["active_analysis_plan"]
+
+    assert plan3["group_by"][0]["column"] == "region"
+    region_filters = [f for f in plan3["filters"] if f["column"].lower() == "region"]
+    assert len(region_filters) == 1
+    assert region_filters[0]["value"] == "North"
+    assert region_filters[0]["operator"] in ("!=", FilterOperator.NEQ.value)
+
+
+def test_multiturn_exclusion_filter_with_trailing_clause_mixed_edge_case(client: TestClient):
+    """
+    Verifies that an exclusion query with trailing clauses ('Plot sales by region except North for 2024')
+    accurately extracts the target column value without capturing trailing text as part of the filter value.
+    """
+    session_id = "sess-excl-trailing-1"
+    ds_id = _upload_test_dataset(client, session_id, "region_sales.csv", SAMPLE_REGION_SALES_CSV)
+
+    client.post("/chat", json={"message": "Show top products by sales.", "session_id": session_id, "dataset_id": ds_id})
+    client.post("/chat", json={"message": "Filter to only the North region.", "session_id": session_id})
+
+    r3 = client.post("/chat", json={"message": "Plot sales by region except North for 2024", "session_id": session_id})
+    assert r3.status_code == 200
+    plan3 = _sessions[session_id]["active_analysis_plan"]
+
+    assert plan3["group_by"][0]["column"] == "region"
+    region_filters = [f for f in plan3["filters"] if f["column"].lower() == "region"]
+    assert len(region_filters) == 1
+    # Crucial validation: Must be 'North', NOT 'North for 2024'
+    assert region_filters[0]["value"] == "North"
+    assert region_filters[0]["operator"] in ("!=", FilterOperator.NEQ.value)
+
+
+def test_multiturn_dimension_change_preserves_unrelated_filters(client: TestClient):
+    """
+    Verifies that when a grouping dimension changes, unrelated filters (e.g. status = delivered)
+    are strictly preserved while the stale filter on the new grouping dimension is cleared.
+    """
+    session_id = "sess-unrelated-preserv-1"
+    ds_id = _upload_test_dataset(client, session_id, "region_sales.csv", SAMPLE_REGION_SALES_CSV)
+
+    # Turn 1: Top products by sales
+    client.post("/chat", json={"message": "Show top products by sales.", "session_id": session_id, "dataset_id": ds_id})
+    # Turn 2: Filter to only the North region
+    client.post("/chat", json={"message": "Filter to only the North region.", "session_id": session_id})
+    # Turn 3: Also filter where status is delivered
+    client.post("/chat", json={"message": "where status is delivered", "session_id": session_id})
+
+    plan_mid = _sessions[session_id]["active_analysis_plan"]
+    assert any(f["column"].lower() == "region" for f in plan_mid["filters"])
+    assert any(f["column"].lower() == "status" for f in plan_mid["filters"])
+
+    # Turn 4: Plot sales by region
+    r4 = client.post("/chat", json={"message": "Plot sales by region", "session_id": session_id})
+    assert r4.status_code == 200
+    plan4 = _sessions[session_id]["active_analysis_plan"]
+
+    assert plan4["group_by"][0]["column"] == "region"
+    # Region filter must be cleared
+    assert not any(f["column"].lower() == "region" for f in plan4["filters"])
+    # Status filter must remain preserved
+    status_filters = [f for f in plan4["filters"] if f["column"].lower() == "status"]
+    assert len(status_filters) == 1
+    assert status_filters[0]["value"] == "delivered"
+
+
+def test_multiturn_filter_only_followup_preserves_existing_grouping(client: TestClient):
+    """
+    Verifies that a filter-only follow-up ('Filter to only the North region')
+    preserves the existing grouping on 'product' and does NOT switch grouping to region.
+    """
+    session_id = "sess-filter-only-preserv-1"
+    ds_id = _upload_test_dataset(client, session_id, "region_sales.csv", SAMPLE_REGION_SALES_CSV)
+
+    client.post("/chat", json={"message": "Show the top 2 products by sales.", "session_id": session_id, "dataset_id": ds_id})
+    r2 = client.post("/chat", json={"message": "Filter to only the North region.", "session_id": session_id})
+    assert r2.status_code == 200
+
+    plan2 = _sessions[session_id]["active_analysis_plan"]
+    # Grouping must remain product
+    assert plan2["group_by"][0]["column"] == "product"
+    assert any(f["column"].lower() == "region" and f["value"] == "North" for f in plan2["filters"])
+
+
+def test_multiturn_for_all_transactions_does_not_synthesize_filter(client: TestClient):
+    """
+    Verifies that generic prepositions like 'for all transactions' ('Plot sales by region for all transactions')
+    are not interpreted as an explicit filter, correctly clearing the inherited region filter.
+    """
+    session_id = "sess-all-tx-1"
+    ds_id = _upload_test_dataset(client, session_id, "region_sales.csv", SAMPLE_REGION_SALES_CSV)
+
+    client.post("/chat", json={"message": "Show the top 2 products by sales.", "session_id": session_id, "dataset_id": ds_id})
+    client.post("/chat", json={"message": "Filter to only the North region.", "session_id": session_id})
+
+    r3 = client.post("/chat", json={"message": "Plot sales by region for all transactions", "session_id": session_id})
+    assert r3.status_code == 200
+    plan3 = _sessions[session_id]["active_analysis_plan"]
+
+    assert plan3["group_by"][0]["column"] == "region"
+    # Neither 'North' nor 'all transactions' should be present as a filter
+    assert len(plan3["filters"]) == 0
+
+
+SAMPLE_OVERLAPPING_REGIONS_CSV = """product,region,category,sales,profit
+Laptops,North,Electronics,50000,8000
+Laptops,North America,Electronics,72000,9500
+Phones,South,Food and Beverage,30000,6200
+Monitors,East,Food and Beverage,15000,2000
+"""
+
+
+def test_multiturn_exclusion_unmatched_value_does_not_synthesize_filter(client: TestClient):
+    """
+    Verifies that when known dataset values are available, an unmatched exclusion
+    such as 'except high value orders' does not synthesize an arbitrary NEQ filter.
+    """
+    session_id = "sess-unmatched-excl-1"
+    ds_id = _upload_test_dataset(client, session_id, "region_sales.csv", SAMPLE_REGION_SALES_CSV)
+
+    client.post("/chat", json={"message": "Show the top 2 products by sales.", "session_id": session_id, "dataset_id": ds_id})
+    client.post("/chat", json={"message": "Filter to only the North region.", "session_id": session_id})
+
+    r3 = client.post("/chat", json={"message": "Plot sales by region except high value orders", "session_id": session_id})
+    assert r3.status_code == 200
+    plan3 = _sessions[session_id]["active_analysis_plan"]
+
+    assert plan3["group_by"][0]["column"] == "region"
+    # Inherited North filter must be cleared, and no 'high value orders' filter should be created
+    assert len(plan3["filters"]) == 0
+
+
+def test_multiturn_exclusion_overlapping_values_prefers_longest_match(client: TestClient):
+    """
+    Verifies that when dataset has overlapping candidates (e.g. 'North' and 'North America'),
+    requesting 'except North America' excludes ONLY 'North America' and does not exclude 'North'.
+    """
+    session_id = "sess-overlapping-excl-1"
+    ds_id = _upload_test_dataset(client, session_id, "overlap_regions.csv", SAMPLE_OVERLAPPING_REGIONS_CSV)
+
+    client.post("/chat", json={"message": "Show top products by sales.", "session_id": session_id, "dataset_id": ds_id})
+    r2 = client.post("/chat", json={"message": "Plot sales by region except North America", "session_id": session_id})
+    assert r2.status_code == 200
+    plan2 = _sessions[session_id]["active_analysis_plan"]
+
+    assert plan2["group_by"][0]["column"] == "region"
+    assert len(plan2["filters"]) == 1
+    # Must be NEQ 'North America', NOT NOT_IN ['North', 'North America']
+    assert plan2["filters"][0]["column"] == "region"
+    assert plan2["filters"][0]["operator"] in ("!=", FilterOperator.NEQ.value)
+    assert plan2["filters"][0]["value"] == "North America"
+
+
+def test_multiturn_exclusion_multi_value_with_known_values(client: TestClient):
+    """
+    Verifies multi-value exclusion such as 'except North and South' produces a NOT_IN filter.
+    """
+    session_id = "sess-multi-excl-1"
+    ds_id = _upload_test_dataset(client, session_id, "region_sales.csv", SAMPLE_REGION_SALES_CSV)
+
+    client.post("/chat", json={"message": "Show top products by sales.", "session_id": session_id, "dataset_id": ds_id})
+    r2 = client.post("/chat", json={"message": "Plot sales by region except North and South", "session_id": session_id})
+    assert r2.status_code == 200
+    plan2 = _sessions[session_id]["active_analysis_plan"]
+
+    assert plan2["group_by"][0]["column"] == "region"
+    assert len(plan2["filters"]) == 1
+    assert plan2["filters"][0]["column"] == "region"
+    assert plan2["filters"][0]["operator"] in ("not_in", FilterOperator.NOT_IN.value)
+    assert plan2["filters"][0]["value"] == ["North", "South"]
+
+
+def test_multiturn_exclusion_quoted_compound_value_with_and(client: TestClient):
+    """
+    Verifies that a quoted compound value containing 'and' (e.g. 'Food and Beverage')
+    is preserved as a single exclusion filter and not split into multiple sub-tokens.
+    """
+    session_id = "sess-quoted-and-1"
+    ds_id = _upload_test_dataset(client, session_id, "overlap_regions.csv", SAMPLE_OVERLAPPING_REGIONS_CSV)
+
+    client.post("/chat", json={"message": "Show sales by category.", "session_id": session_id, "dataset_id": ds_id})
+    r2 = client.post("/chat", json={"message": 'Plot sales by category except "Food and Beverage"', "session_id": session_id})
+    assert r2.status_code == 200
+    plan2 = _sessions[session_id]["active_analysis_plan"]
+
+    assert plan2["group_by"][0]["column"] == "category"
+    assert len(plan2["filters"]) == 1
+    assert plan2["filters"][0]["column"] == "category"
+    assert plan2["filters"][0]["operator"] in ("!=", FilterOperator.NEQ.value)
+    assert plan2["filters"][0]["value"] == "Food and Beverage"
+
+
+def test_multiturn_exclusion_fallback_trailing_clause_unit_level():
+    """
+    Verifies fallback exclusion extraction when known values are empty/unavailable,
+    ensuring trailing prepositions (in 2024, during 2024, filtered by status) are trimmed.
+    """
+    from app.analytics.planner import _extract_exclusion_filters
+    from app.analytics.schemas import DatasetMetadata, DatasetProfile
+
+    mock_metadata = DatasetMetadata(
+        dataset_id="nonexistent-mock-id",
+        session_id="mock-session",
+        filename="mock.csv",
+        format="csv",
+        row_count=0,
+        column_count=1,
+        created_at="2026-01-01T00:00:00",
+        profile=DatasetProfile(row_count=0, column_count=1, missing_cells=0, duplicate_rows=0, columns=[]),
+    )
+
+    # Trailing 'in 2024'
+    f1 = _extract_exclusion_filters("Plot sales by region except North in 2024", "region", mock_metadata)
+    assert len(f1) == 1
+    assert f1[0].column == "region"
+    assert f1[0].operator == FilterOperator.NEQ
+    assert f1[0].value == "North"
+
+    # Trailing 'during 2024'
+    f2 = _extract_exclusion_filters("Plot sales by region except North during 2024", "region", mock_metadata)
+    assert len(f2) == 1
+    assert f2[0].value == "North"
+
+    # Trailing 'filtered by status'
+    f3 = _extract_exclusion_filters("Plot sales by region except North filtered by status", "region", mock_metadata)
+    assert len(f3) == 1
+    assert f3[0].value == "North"
+
+
+def test_multiturn_explicit_clear_filter_directive(client: TestClient):
+    """
+    Verifies that explicit directives like 'across the entire dataset, ignoring previous filters'
+    reliably clear inherited filters during multi-turn chat sessions.
+    """
+    session_id = "sess-explicit-clear-1"
+    ds_id = _upload_test_dataset(client, session_id, "sales.csv", SAMPLE_SALES_CSV)
+
+    # Turn 1: Filter to Electronics
+    r1 = client.post(
+        "/chat",
+        json={"message": "Show revenue by category where category is Electronics", "session_id": session_id, "dataset_id": ds_id},
+    )
+    assert r1.status_code == 200
+    plan1 = _sessions[session_id]["active_analysis_plan"]
+    assert any(f["column"] == "category" and f["value"] == "Electronics" for f in plan1["filters"])
+
+    # Turn 2: Genuine follow-up preserves filter
+    r2 = client.post(
+        "/chat",
+        json={"message": "Plot revenue by product_name", "session_id": session_id},
+    )
+    assert r2.status_code == 200
+    plan2 = _sessions[session_id]["active_analysis_plan"]
+    assert any(f["column"] == "category" and f["value"] == "Electronics" for f in plan2["filters"])
+    assert any(g["column"] == "product_name" for g in plan2["group_by"])
+
+    # Turn 3: Explicit clear directive removes filter across whole dataset
+    r3 = client.post(
+        "/chat",
+        json={
+            "message": "Count records by category across the entire dataset, ignoring previous filters.",
+            "session_id": session_id,
+        },
+    )
+    assert r3.status_code == 200
+    plan3 = _sessions[session_id]["active_analysis_plan"]
+    assert len(plan3["filters"]) == 0
+    assert any(g["column"] == "category" for g in plan3["group_by"])
+    assert plan3["aggregations"][0]["function"] == "count"

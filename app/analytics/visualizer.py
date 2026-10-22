@@ -45,6 +45,7 @@ from app.analytics.chart_style import (
     FONT_SIZE_LABEL,
     FONT_SIZE_TICK,
     truncate_text,
+    format_clean_metric_label,
 )
 
 logger = logging.getLogger("app.analytics.visualizer")
@@ -250,7 +251,8 @@ def _render_bar_chart(
     rotation = 35 if len(clamped_rows) > 5 else 0
     ha = "right" if rotation > 0 else "center"
     ax.set_xticklabels(labels, rotation=rotation, ha=ha, fontsize=FONT_SIZE_TICK, color=TEXT_MAIN)
-    ax.set_ylabel(truncate_text(num_col, MAX_LABEL_LENGTH), fontsize=FONT_SIZE_LABEL, color=TEXT_MAIN)
+    clean_ylabel = format_clean_metric_label(num_col)
+    ax.set_ylabel(truncate_text(clean_ylabel, MAX_LABEL_LENGTH), fontsize=FONT_SIZE_LABEL, color=TEXT_MAIN)
     ax.set_title(truncate_text(title, MAX_TITLE_LENGTH), fontsize=FONT_SIZE_TITLE, fontweight="bold", color=TEXT_MAIN, pad=12)
 
 
@@ -273,7 +275,7 @@ def _render_line_chart(
         marker="o",
         markersize=5,
         linewidth=2,
-        label=truncate_text(y_col, MAX_LABEL_LENGTH),
+        label=truncate_text(format_clean_metric_label(y_col), MAX_LABEL_LENGTH),
     )
 
     # Subsample x-ticks if there are many rows
@@ -284,7 +286,7 @@ def _render_line_chart(
 
     ax.set_xticks(tick_indices)
     ax.set_xticklabels([labels[i] for i in tick_indices], rotation=35, ha="right", fontsize=FONT_SIZE_TICK, color=TEXT_MAIN)
-    ax.set_ylabel(truncate_text(y_col, MAX_LABEL_LENGTH), fontsize=FONT_SIZE_LABEL, color=TEXT_MAIN)
+    ax.set_ylabel(truncate_text(format_clean_metric_label(y_col), MAX_LABEL_LENGTH), fontsize=FONT_SIZE_LABEL, color=TEXT_MAIN)
     ax.set_title(truncate_text(title, MAX_TITLE_LENGTH), fontsize=FONT_SIZE_TITLE, fontweight="bold", color=TEXT_MAIN, pad=12)
 
 
@@ -308,8 +310,8 @@ def _render_scatter_chart(
         linewidth=0.5,
         s=40,
     )
-    ax.set_xlabel(truncate_text(x_col, MAX_LABEL_LENGTH), fontsize=FONT_SIZE_LABEL, color=TEXT_MAIN)
-    ax.set_ylabel(truncate_text(y_col, MAX_LABEL_LENGTH), fontsize=FONT_SIZE_LABEL, color=TEXT_MAIN)
+    ax.set_xlabel(truncate_text(format_clean_metric_label(x_col), MAX_LABEL_LENGTH), fontsize=FONT_SIZE_LABEL, color=TEXT_MAIN)
+    ax.set_ylabel(truncate_text(format_clean_metric_label(y_col), MAX_LABEL_LENGTH), fontsize=FONT_SIZE_LABEL, color=TEXT_MAIN)
     ax.set_title(truncate_text(title, MAX_TITLE_LENGTH), fontsize=FONT_SIZE_TITLE, fontweight="bold", color=TEXT_MAIN, pad=12)
 
 
@@ -331,7 +333,7 @@ def _render_histogram_chart(
         linewidth=1.0,
         alpha=0.9,
     )
-    ax.set_xlabel(truncate_text(num_col, MAX_LABEL_LENGTH), fontsize=FONT_SIZE_LABEL, color=TEXT_MAIN)
+    ax.set_xlabel(truncate_text(format_clean_metric_label(num_col), MAX_LABEL_LENGTH), fontsize=FONT_SIZE_LABEL, color=TEXT_MAIN)
     ax.set_ylabel("Frequency", fontsize=FONT_SIZE_LABEL, color=TEXT_MAIN)
     ax.set_title(truncate_text(title, MAX_TITLE_LENGTH), fontsize=FONT_SIZE_TITLE, fontweight="bold", color=TEXT_MAIN, pad=12)
 
@@ -439,7 +441,25 @@ def render_chart(
         default_title = f"{pt.aggregation.title()} {pt.metric} by {pt.row_dimension} and {pt.column_dimension}"
     elif result.plan and result.plan.aggregations:
         agg = result.plan.aggregations[0]
-        agg_name = agg.alias or (f"{agg.function.value}({agg.column})" if agg.column else "Count")
+        if agg.alias:
+            agg_name = format_clean_metric_label(agg.alias)
+        elif agg.column:
+            fn = agg.function.value.lower()
+            if fn == "sum":
+                agg_name = f"Total {agg.column}"
+            elif fn == "avg":
+                agg_name = f"Average {agg.column}"
+            elif fn == "min":
+                agg_name = f"Minimum {agg.column}"
+            elif fn == "max":
+                agg_name = f"Maximum {agg.column}"
+            elif fn in ("count", "count_distinct"):
+                agg_name = f"Count of {agg.column}"
+            else:
+                agg_name = f"{agg.function.value.title()} {agg.column}"
+        else:
+            agg_name = "Count"
+
         if result.plan.group_by:
             gb_name = result.plan.group_by[0].column
             default_title = f"{agg_name} by {gb_name}"
@@ -447,6 +467,10 @@ def render_chart(
             default_title = agg_name
 
     final_title = title or default_title
+    if final_title:
+        for prefix, clean_p in (("sum_", "Total "), ("avg_", "Average "), ("min_", "Minimum "), ("max_", "Maximum ")):
+            if prefix in final_title:
+                final_title = final_title.replace(prefix, clean_p)
 
     # Create isolated figure instance
     fig = Figure(figsize=(FIG_WIDTH_INCHES, FIG_HEIGHT_INCHES), dpi=DPI, facecolor=BG_COLOR)

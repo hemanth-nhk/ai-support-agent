@@ -8,11 +8,15 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.database.seed import seed
 
+from app.config import settings
+
 client = TestClient(app)
+TEST_API_KEY = "test-chat-key"
 
 
 def setup_module():
     seed(force=True)
+    settings.support_api_key = TEST_API_KEY
 
 
 def test_chat_order_status_end_to_end():
@@ -191,3 +195,181 @@ def test_chat_document_query_with_attachment_flow(monkeypatch):
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+# ============================================================================
+# Customer Orders Auth Enforcement Tests (Fix 1)
+# ============================================================================
+
+def test_chat_customer_orders_unauthenticated_two_turn_attack_rejected():
+    """Turn 1 prompts for missing customer_id; Turn 2 supplying customer_id without API key is rejected with 401."""
+    session_id = "test_attack_2turn"
+
+    # Turn 1: user asks for orders without customer ID and without API key
+    r1 = client.post("/chat", json={"message": "Show my orders", "session_id": session_id})
+    assert r1.status_code == 200
+    b1 = r1.json()
+    assert b1["status"] == "not_found"
+    assert "customer id" in b1["response"].lower()
+
+    # Turn 2: user supplies customer ID "1" without API key -> MUST be rejected with 401
+    r2 = client.post("/chat", json={"message": "1", "session_id": session_id})
+    assert r2.status_code == 401
+    assert r2.json()["detail"] == "Invalid or missing API key."
+
+    # Verify session was not contaminated with customer 1's orders
+    with patch("app.agent.nodes.generate_text", return_value="Hello! How can I assist you today?"):
+        r3 = client.post("/chat", json={"message": "Hello", "session_id": session_id})
+        assert r3.status_code == 200
+        assert "1001" not in r3.json()["response"]
+
+
+def test_chat_customer_orders_invalid_key_rejected():
+    """Requests with an invalid API key are rejected with 401, both single-turn and multi-turn."""
+    # Single-turn attack with invalid key
+    r_single = client.post(
+        "/chat",
+        json={"message": "What orders does customer 1 have?"},
+        headers={"X-API-Key": "wrong-key"},
+    )
+    assert r_single.status_code == 401
+    assert r_single.json()["detail"] == "Invalid or missing API key."
+
+    # Multi-turn with invalid key on turn 2
+    session_id = "test_invalid_key_2turn"
+    r1 = client.post(
+        "/chat",
+        json={"message": "What are my orders?", "session_id": session_id},
+        headers={"X-API-Key": "wrong-key"},
+    )
+    assert r1.status_code == 200
+    assert r1.json()["status"] == "not_found"
+
+    r2 = client.post(
+        "/chat",
+        json={"message": "1", "session_id": session_id},
+        headers={"X-API-Key": "wrong-key"},
+    )
+    assert r2.status_code == 401
+    assert r2.json()["detail"] == "Invalid or missing API key."
+
+
+def test_chat_customer_orders_valid_key_authorized():
+    """Requests with a valid API key successfully return customer orders in single-turn and multi-turn."""
+    # Single-turn with valid key
+    r_single = client.post(
+        "/chat",
+        json={"message": "What orders does customer 1 have?"},
+        headers={"X-API-Key": TEST_API_KEY},
+    )
+    assert r_single.status_code == 200
+    b_single = r_single.json()
+    assert b_single["status"] == "ok"
+    assert b_single["intent"] == "CUSTOMER_ORDERS"
+    assert b_single["tool_used"] == "get_customer_orders"
+    assert b_single["retrieval_count"] == 2
+    assert "1001" in b_single["response"]
+    assert "1002" in b_single["response"]
+
+    # Multi-turn with valid key
+    session_id = "test_valid_key_2turn"
+    r1 = client.post(
+        "/chat",
+        json={"message": "Show my orders", "session_id": session_id},
+        headers={"X-API-Key": TEST_API_KEY},
+    )
+    assert r1.status_code == 200
+    assert r1.json()["status"] == "not_found"
+
+    r2 = client.post(
+        "/chat",
+        json={"message": "1", "session_id": session_id},
+        headers={"X-API-Key": TEST_API_KEY},
+    )
+    assert r2.status_code == 200
+    b2 = r2.json()
+    assert b2["status"] == "ok"
+    assert b2["intent"] == "CUSTOMER_ORDERS"
+    assert b2["tool_used"] == "get_customer_orders"
+    assert "1001" in b2["response"]
+
+
+def test_chat_direct_orders_and_unprotected_intents_remain_functional():
+    """Direct order endpoints require API key, while public chat intents (ORDER_STATUS, FAQ) remain functional without API key."""
+    # Direct order endpoint requires API key
+    assert client.get("/orders/1001").status_code == 401
+    r_order = client.get("/orders/1001", headers={"X-API-Key": TEST_API_KEY})
+    assert r_order.status_code == 200
+    assert r_order.json()["id"] == 1001
+
+    # Chat ORDER_STATUS is public
+    r_chat_order = client.post("/chat", json={"message": "Where is order 1001?"})
+    assert r_chat_order.status_code == 200
+    assert r_chat_order.json()["status"] == "ok"
+    assert r_chat_order.json()["intent"] == "ORDER_STATUS"
+
+    # Chat FAQ is public
+    r_faq = client.post("/chat", json={"message": "What is your return policy?"})
+    assert r_faq.status_code == 200
+    assert r_faq.json()["intent"] == "FAQ"
+
+    # Direct customer orders still requires API key
+    r_cust_unauth = client.get("/customers/1/orders")
+    assert r_cust_unauth.status_code == 401
+    r_cust_auth = client.get("/customers/1/orders", headers={"X-API-Key": TEST_API_KEY})
+    assert r_cust_auth.status_code == 200
+    assert len(r_cust_auth.json()) == 2
+
+
+def test_chat_customer_orders_pre_execution_guard_proves_tool_never_called_unauthorized():
+    """Mock/spy proves get_customer_orders() is NOT called for unauthorized requests (single-turn and 2-turn)."""
+    with patch("app.agent.nodes.get_customer_orders") as mock_tool:
+        # 1. Single-turn unauthorized request -> tool never called
+        r_single = client.post("/chat", json={"message": "What orders does customer 1 have?"})
+        assert r_single.status_code == 401
+        assert r_single.json()["detail"] == "Invalid or missing API key."
+        mock_tool.assert_not_called()
+
+        # 2. Two-turn flow: turn 1 asks for customer ID, turn 2 supplies it without API key -> tool never called
+        session_id = "test_spy_2turn"
+        r1 = client.post("/chat", json={"message": "Show my orders", "session_id": session_id})
+        assert r1.status_code == 200
+        assert r1.json()["status"] == "not_found"
+        assert "customer id" in r1.json()["response"].lower()
+        mock_tool.assert_not_called()
+
+        r2 = client.post("/chat", json={"message": "1", "session_id": session_id})
+        assert r2.status_code == 401
+        assert r2.json()["detail"] == "Invalid or missing API key."
+        mock_tool.assert_not_called()
+
+        # 3. Two-turn flow with invalid key -> tool never called
+        session_bad = "test_spy_badkey"
+        r1_bad = client.post(
+            "/chat",
+            json={"message": "Show my orders", "session_id": session_bad},
+            headers={"X-API-Key": "wrong-key"},
+        )
+        assert r1_bad.status_code == 200
+        mock_tool.assert_not_called()
+
+        r2_bad = client.post(
+            "/chat",
+            json={"message": "1", "session_id": session_bad},
+            headers={"X-API-Key": "wrong-key"},
+        )
+        assert r2_bad.status_code == 401
+        assert r2_bad.json()["detail"] == "Invalid or missing API key."
+        mock_tool.assert_not_called()
+
+        # 4. Authorized request DOES call the tool
+        mock_tool.return_value = {
+            "found": True,
+            "orders": [{"id": 1001, "product": "Laptop", "status": "Shipped"}],
+        }
+        r_auth = client.post(
+            "/chat",
+            json={"message": "What orders does customer 1 have?"},
+            headers={"X-API-Key": TEST_API_KEY},
+        )
+        assert r_auth.status_code == 200
+        assert r_auth.json()["status"] == "ok"
+        assert mock_tool.call_count == 1

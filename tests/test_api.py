@@ -25,16 +25,26 @@ def test_health():
     assert r.json() == {"status": "healthy"}
 
 
-def test_get_existing_order():
-    r = client.get("/orders/1001")
+def test_get_existing_order_with_valid_key():
+    r = client.get("/orders/1001", headers={"X-API-Key": TEST_API_KEY})
     assert r.status_code == 200
     body = r.json()
     assert body["id"] == 1001
     assert body["product"] == "Laptop"
 
 
-def test_get_missing_order_returns_404():
-    r = client.get("/orders/9999")
+def test_get_existing_order_requires_api_key():
+    r = client.get("/orders/1001")  # no header
+    assert r.status_code == 401
+
+
+def test_get_existing_order_rejects_wrong_key():
+    r = client.get("/orders/1001", headers={"X-API-Key": "wrong-key"})
+    assert r.status_code == 401
+
+
+def test_get_missing_order_returns_404_with_valid_key():
+    r = client.get("/orders/9999", headers={"X-API-Key": TEST_API_KEY})
     assert r.status_code == 404
 
 

@@ -1,8 +1,8 @@
-# AI Customer Support & Tabular Analytics Platform (Local-Only)
+# Local-First AI Customer Support & Tabular Analytics Platform
 
-An enterprise-grade, locally-hosted customer support automation and deterministic tabular analytics platform. Combines rule-based support workflows, local RAG document grounding, and an in-memory DuckDB analytical engine with server-side chart rendering and conversational multi-turn analytical memory.
+A locally-hosted customer support automation and deterministic tabular analytics platform. Combines rule-based support workflows, local RAG document grounding, and an in-memory DuckDB analytical engine with server-side chart rendering and conversational multi-turn analytical memory.
 
-**No cloud APIs, no external LLM dependencies, zero cloud data leakage.** Inference runs on your own machine via Ollama (`llama3.2:3b` by default), vector search runs in local Chroma, and structured data is queried using in-memory DuckDB.
+Designed for local execution without cloud-based LLM APIs. Inference runs through Ollama (`llama3.2:3b` by default), embeddings and vector search run locally in Chroma, and tabular analytics use in-memory DuckDB. Actual data exposure depends on configuration, network access, and the runtime environment.
 
 ---
 
@@ -45,21 +45,21 @@ Guardrails & Schema Envelopes (Pydantic, Fail-Closed)
 Response Envelope: { response, intent, tool_used, retrieval_count, status, chart, table, pivot }
 ```
 
-### Core Architecture & Guarantees
+### Core Architecture & Design Controls
 
-1. **Zero Arbitrary SQL:** The LLM *never* generates SQL strings. Queries are compiled from a strictly validated Pydantic AST (`AnalysisPlan`), using double-quote identifier escaping, data-type compatibility checks, and parameterized filters / safe literal formatting.
-2. **Zero Arbitrary Python Execution:** Neither the LLM nor the user can inject Python code. Visualization uses an isolated, server-controlled Object-Oriented Matplotlib engine (`Figure`/`Canvas`) with fixed styling tokens.
-3. **No Hallucinated Facts or Numbers:**
+1. **Zero Arbitrary SQL:** The LLM does not generate SQL strings directly. Queries are compiled from a strictly validated Pydantic AST (`AnalysisPlan`), using double-quote identifier escaping, data-type compatibility checks, and parameterized filters / safe literal formatting.
+2. **Zero Arbitrary Python Execution:** Neither the LLM nor the user can inject arbitrary Python code. Visualization uses an isolated, server-controlled Object-Oriented Matplotlib engine (`Figure`/`Canvas`) with fixed styling tokens.
+3. **Deterministic Grounding Controls (Design Goal):**
    - Order and customer details are rendered from deterministic SQLite templates.
-   - FAQ responses quote approved excerpts verbatim.
-   - Analytical findings are grounded exclusively in executed DuckDB result sets and matrix totals.
-4. **Sandboxed DuckDB Runtime:** Queries run in ephemeral in-memory databases with hard resource boundaries (`512MB RAM`, `2 threads`, `5.0-second` hardware cancellation timers, row-output clamps).
-5. **Server-Verified Signed Session Identity:** Prevents session spoofing and cross-session data exfiltration. Session identity is cryptographically signed using HMAC-SHA256 (`SESSION_SECRET_KEY`) and resolved exclusively from `app_session_token` HTTP-only SameSite cookies or `X-Session-Token` headers. Client-provided body/query `session_id` values are never trusted as identity. Conversation ownership is immutable across `PATCH` updates, and `/chat` analytical execution verifies ownership before any database query or tool executes.
-6. **Fail-Closed Semantics:** Any unhandled exception, schema mismatch, or path violation fails closed to a safe error envelope without state corruption.
+   - FAQ responses are constrained to quote approved excerpts verbatim.
+   - Analytical findings are generated directly from executed DuckDB result sets and matrix totals.
+4. **Sandboxed DuckDB Runtime:** Queries run in ephemeral in-memory databases with strict resource boundaries (`512MB RAM`, `2 threads`, `5.0-second` hardware cancellation timers, row-output clamps).
+5. **Signed Session Identity & Access Controls:** Uses HMAC-SHA256-signed session tokens and server-side ownership checks to mitigate session spoofing and unauthorized cross-session access. Session identity is cryptographically signed (`SESSION_SECRET_KEY`) and resolved exclusively from `app_session_token` HTTP-only SameSite cookies or `X-Session-Token` headers. Client-provided body/query `session_id` values are never trusted as identity. Conversation ownership is immutable across `PATCH` updates, and `/chat` analytical execution verifies ownership before any database query or tool executes.
+6. **Fail-Closed Semantics:** Unhandled exceptions, schema mismatches, or path violations fail closed to a safe error envelope without state corruption.
 
 ---
 
-## Implemented Capabilities (Phases 1–9)
+## Implemented Capabilities (Phases 1–9 & Phase 13 Security Hardening)
 
 ### 1. Customer Support Workflows
 - **Order Lookup:** Instant order tracking (`ORDER_STATUS`) by ID using parameterized SQLite queries.
@@ -122,6 +122,11 @@ Response Envelope: { response, intent, tool_used, retrieval_count, status, chart
 - **Document & Dataset Chips:** Visual indicators for active attachments.
 - **Interactive Tables:** Paginated result tables for analytical responses.
 - **Chart Viewer:** Inline chart cards with fullscreen modal zoom and PNG download.
+
+### 10. Session Security Hardening (Phase 13)
+- **HMAC-SHA256 Session Identity:** Cryptographically signed session tokens (`app_session_token` cookie or `X-Session-Token` header) mitigate client-side ID spoofing.
+- **Resource Ownership Verification:** Strict server-side checks verify conversation and dataset ownership before executing analytical queries or rendering charts.
+- **CSRF Defense:** Cookie-based state-modifying requests require double-submit token verification.
 
 ---
 
@@ -254,13 +259,28 @@ uvicorn app.main:app --reload
 ### Installation (Linux / macOS)
 
 ```bash
+# 1. Clone the repository
+git clone https://github.com/hemanth-nhk/ai-support-agent.git
+cd ai-support-agent
+
+# 2. Create and activate a virtual environment
 python3 -m venv venv
 source venv/bin/activate
+
+# 3. Install pinned dependencies
 pip install -r requirements.txt
+
+# 4. Configure environment
 cp .env.example .env
+
+# 5. Seed demo database and build local FAQ vector store
 python3 -m app.database.seed
 python3 -m app.rag.ingestion
+
+# 6. Pull local Ollama model
 ollama pull llama3.2:3b
+
+# 7. Start the development server
 uvicorn app.main:app --reload
 ```
 
@@ -289,9 +309,13 @@ pytest tests/test_analysis_pivot.py -v
 python evaluation/eval_35_cases.py
 ```
 
-**Core Regression Status:** **`458 passed, 0 failures, 0 errors, 0 regressions`**.
-**Evaluation Status:** **`40/40 passed (100% pass rate; 100% Reliability, 100% Support, 100% Analytics, 100% Document)`**.
-**Reliability Benchmark Status:** **`104/104 passed (100% extraction fidelity, 100% prompt-injection resistance, 0.0% cross-session leakage)`**.
+### Latest Verified Test Runs (October 2026)
+
+- **Core Regression Suite:** `458 passed, 0 failures, 0 errors` across 31 test files (`pytest -v --tb=short`).
+- **End-to-End Evaluation Benchmark (`eval_35_cases.py`):** `40/40 passed` (100% pass rate across 10 Support, 8 Document QA, 17 Tabular Analytics, and 5 Reliability cases).
+- **File Reliability & Adversarial Benchmark:** `104/104 passed` (100% extraction fidelity, 100% prompt-injection boundary resistance, 0.0% cross-session leakage across test fixtures).
+
+> **Verification Context & Scope:** These automated results validate the implemented functional contracts, deterministic SQL compilation rules, and boundary defenses within the defined test suites and test fixtures. They provide empirical evidence of implemented behaviors and regression prevention, rather than an unconstrained guarantee against every arbitrary environment or threat model.
 
 ---
 
@@ -299,7 +323,7 @@ python evaluation/eval_35_cases.py
 
 To maintain architectural integrity, scope boundaries are strictly maintained:
 
-### Implemented (Phases 1–9 + Reliability Remediation)
+### Implemented (Phases 1–9 + Phase 13 Security Hardening)
 - Local-only support workflow routing and customer order queries.
 - Chroma vector RAG with cosine thresholding and verbatim quotes.
 - Ingestion, chunking, and deterministic QA of session-uploaded `.pdf`, `.docx`, and `.txt` documents.
@@ -310,6 +334,7 @@ To maintain architectural integrity, scope boundaries are strictly maintained:
 - Server-side Matplotlib chart rendering (`bar`, `line`, `scatter`, `histogram`, `heatmap`).
 - Multi-turn conversational memory with AST mutations and fail-closed rollback.
 - Phase 9 2D cross-tab pivot tables with marginal totals and bounded heatmaps.
+- Phase 13 session security hardening (HMAC-SHA256 signed tokens, CSRF defense, and server-side resource ownership validation).
 - Disambiguated dual-attachment routing between tabular analysis and document queries.
 
 ### Excluded / Future Scope (Explicit Non-Goals for This Milestone)
